@@ -21,10 +21,16 @@ canvas{position:fixed;inset:0;width:100%;height:100%;display:block}
 .bottom{display:grid;gap:18px}
 #chord{font-style:italic;font-weight:300;font-size:clamp(22px,2.4vw,34px);letter-spacing:.04em;transition:opacity .4s;min-height:1.3em}
 #sec{color:var(--dim)}
-#tl{position:relative;display:flex;height:28px;border-top:1px solid var(--line)}
+#tl{position:relative;display:flex;height:34px;border-top:1px solid var(--line);pointer-events:auto;cursor:pointer;touch-action:none;user-select:none}
+#tl:hover{border-top-color:#efe6d866}
+#hover{position:absolute;top:-22px;transform:translateX(-50%);color:var(--ink);opacity:0;transition:opacity .2s;pointer-events:none}
+#tl:hover #hover{opacity:1}
+body.paused #prog{animation:blink 1.2s steps(2) infinite}
+@keyframes blink{50%{opacity:.25}}
 #tl div{position:relative;border-left:1px solid var(--line);padding:8px 0 0 6px;color:#efe6d855;white-space:nowrap;overflow:hidden;transition:color .8s}
 #tl div.cur{color:var(--ink)}
-#prog{position:absolute;top:-1px;left:0;height:1px;background:var(--ink);width:0}
+#prog{position:absolute;top:-1px;left:0;height:1px;background:var(--ink);width:0;pointer-events:none}
+#prog::after{content:"";position:absolute;right:-4px;top:-4px;width:9px;height:9px;border-radius:50%;background:var(--ink)}
 #ctl{position:fixed;right:4vw;top:calc(4vh + 70px);z-index:3;display:flex;gap:18px;opacity:0;transition:opacity 2.5s}
 #ctl.on{opacity:1}
 #ctl button{background:none;border:0;color:var(--dim);cursor:pointer;padding:0}
@@ -50,15 +56,15 @@ canvas{position:fixed;inset:0;width:100%;height:100%;display:block}
 <div id="hud">
   <div class="top">
     <div class="title"><h1>薄明</h1><p class="mono">hakumei · étude for two guitars</p></div>
-    <div class="meta mono"><div>♩ = 128 &nbsp; <b id="meter">4/4</b></div><div>bar <b id="bar">001</b> · beat <b id="beat">1</b></div></div>
+    <div class="meta mono"><div>♩ = 128 &nbsp; <b id="meter">4/4</b></div><div>bar <b id="bar">001</b> · beat <b id="beat">1</b></div><div><b id="time">0:00 / 0:00</b></div></div>
   </div>
   <div></div>
   <div class="bottom">
     <div><div id="chord">—</div><div id="sec" class="mono">—</div></div>
-    <div id="tl" class="mono"><span id="prog"></span></div>
+    <div id="tl" class="mono"><span id="prog"></span><span id="hover"></span></div>
   </div>
 </div>
-<div id="ctl" class="mono"><button id="rec">● rec</button><button id="restart">↺ restart</button></div>
+<div id="ctl" class="mono"><button id="pp">❚❚ pause</button><button id="rec">● rec</button><button id="restart">↺ restart</button></div>
 
 <script>
 "use strict";
@@ -80,7 +86,9 @@ const BPM = 128, Q = 60 / BPM, E8 = Q / 2, S16 = Q / 4;
 const mtof = m => 440 * Math.pow(2, (m - 69) / 12);
 const rand = (a = 1) => (Math.random() * 2 - 1) * a;
 let ctx, mix, analyser, fftF, waveT, recDest, plate, room, gDelay;
-const bus = {};
+const bus = {}, BUSES = [];
+// per-playback "gate" in front of every bus: seeking detaches the old gates, silencing all pre-scheduled notes
+const gate = inp => { const g = ctx.createGain(); g.connect(inp); return g; };
 
 /* -------------------------------------------------------------- MIX GRAPH */
 function makeIR(sec, decay, bright) {
@@ -140,7 +148,7 @@ function initAudio() {
     const inp = ctx.createGain(), out = ctx.createGain(); out.gain.value = gain;
     chain(inp, ...nodes, out); out.connect(mix);
     [[pl, plate], [rm, room], [dl, gDelay]].forEach(([v, d]) => { if (v) { const s = ctx.createGain(); s.gain.value = v; out.connect(s).connect(d); } });
-    bus[name] = inp; bus[name + "Out"] = out;
+    bus[name + "In"] = inp; bus[name] = gate(inp); bus[name + "Out"] = out; BUSES.push(name);
   };
   /* Guitar rig: comp pedal → preamp (asymmetric tube-ish clip) → tone stack → 1x12 cab IR → mic EQ */
   const rig = (drive, presence, cab) => {
@@ -637,12 +645,29 @@ function scheduler() {
     if (++cur.b >= s.bars) { cur.b = 0; cur.s++; }
   }
 }
-function play() {
-  if (ctx.state !== "running") ctx.resume();
+function play(fromSec = 0) {
+  // find the bar that contains fromSec
+  let s = 0, b = 0, t = 0, abs = 0;
+  outer: for (; s < SONG.length; s++) {
+    const bl = SONG[s].beats * Q;
+    for (b = 0; b < SONG[s].bars; b++, abs++) { if (t + bl > fromSec + 1e-6) break outer; t += bl; }
+  }
+  if (s >= SONG.length) { s = 0; b = 0; t = 0; abs = 0; }
+  // silence everything already scheduled (fast fade, then detach), keep reverb tails natural
+  for (const n of BUSES) { const old = bus[n]; old.gain.setTargetAtTime(0, ctx.currentTime, .015); setTimeout(() => old.disconnect(), 200); bus[n] = gate(bus[n + "In"]); }
+  openHat = null;
   evq.length = 0; voices.g1.length = voices.g2.length = 0;
-  cur = { s: 0, b: 0 }; nextT = startT = ctx.currentTime + .2; playing = true;
+  cur = { s, b }; nextT = ctx.currentTime + .12; startT = nextT - t; playing = true;
+  V.barNo = abs; V.bar = null;
   clearInterval(timer); timer = setInterval(scheduler, 25); scheduler();
 }
+function songPos() { return ctx ? Math.max(0, Math.min(SONG.total, ctx.currentTime - startT)) : 0; }
+async function togglePause() {
+  if (!ctx) return;
+  if (ctx.state === "running") await ctx.suspend(); else await ctx.resume();
+  syncPlayBtn();
+}
+function syncPlayBtn() { $("pp").textContent = ctx && ctx.state === "running" ? "❚❚ pause" : "▶ play"; document.body.classList.toggle("paused", ctx && ctx.state !== "running"); }
 
 /* --------------------------------------------------- EVENTS → VISUAL STATE */
 const evq = [];
@@ -688,7 +713,7 @@ function updateVis(dt) {
     }
   }
   if (V.bar) { const s = SONG[V.bar.s]; $("beat").textContent = 1 + Math.min(s.beats - 1, (now - V.bar.t) / Q | 0); }
-  if (playing || V.bar) $("prog").style.width = Math.min(100, (now - startT) / SONG.total * 100) + "%";
+  if (!dragging && ctx) { const p = songPos(); $("prog").style.width = (p / SONG.total * 100) + "%"; $("time").textContent = fmt(p) + " / " + fmt(SONG.total); }
   const k = r => 1 - Math.exp(-dt * r);
   V.kick *= 1 - k(8); V.snare *= 1 - k(10); V.crash *= 1 - k(1.2);
   const tp = PALS[PT.i];
@@ -862,7 +887,28 @@ $("start").onclick = async () => {
   $("start").classList.add("hide"); $("hud").classList.add("on"); $("ctl").classList.add("on");
   play();
 };
-$("restart").onclick = () => { if (ctx) { V.barNo = 0; play(); } };
+$("restart").onclick = () => { if (ctx) { play(0); if (ctx.state !== "running") togglePause(); } };
+$("pp").onclick = togglePause;
+/* timeline scrubbing: click or drag anywhere on the timeline; seeks snap to the bar */
+const fmt = s => (s / 60 | 0) + ":" + String(s % 60 | 0).padStart(2, "0");
+let dragging = false;
+const tl = $("tl");
+const posAt = e => { const r = tl.getBoundingClientRect(); return Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * SONG.total; };
+const preview = sec => { $("prog").style.width = (sec / SONG.total * 100) + "%"; $("time").textContent = fmt(sec) + " / " + fmt(SONG.total); };
+tl.addEventListener("pointerdown", e => { if (!ctx) return; dragging = true; tl.setPointerCapture(e.pointerId); preview(posAt(e)); });
+tl.addEventListener("pointermove", e => { const r = tl.getBoundingClientRect(); $("hover").style.left = (e.clientX - r.left) + "px"; $("hover").textContent = fmt(posAt(e)); if (dragging) preview(posAt(e)); });
+tl.addEventListener("pointerup", e => { if (!dragging) return; dragging = false; play(posAt(e)); });
+tl.addEventListener("pointercancel", () => { dragging = false; });
+/* keyboard: space = play/pause · ← → = previous / next section · R = restart */
+addEventListener("keydown", e => {
+  if (!ctx) return;
+  if (e.code === "Space") { e.preventDefault(); togglePause(); }
+  else if (e.code === "ArrowRight" || e.code === "ArrowLeft") {
+    const p = songPos(), i = SEC_START.findLastIndex(x => x <= p + .01);
+    const j = e.code === "ArrowRight" ? Math.min(SONG.length - 2, i + 1) : (p - SEC_START[i] > 2 ? i : Math.max(0, i - 1));
+    play(SEC_START[j]);
+  } else if (e.code === "KeyR") play(0);
+});
 let rec = null;
 $("rec").onclick = e => {
   if (!ctx) return; const b = e.currentTarget;
