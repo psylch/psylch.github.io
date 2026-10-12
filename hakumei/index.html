@@ -1,0 +1,880 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>薄明 — Hakumei · an étude for two guitars, in code</title>
+<style>
+:root{--ink:#efe6d8;--dim:#efe6d888;--line:#efe6d82a}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:#07080b;overflow:hidden;color:var(--ink);
+  font-family:"Hiragino Mincho ProN","Yu Mincho","Noto Serif JP","Songti SC",Georgia,serif}
+canvas{position:fixed;inset:0;width:100%;height:100%;display:block}
+.mono{font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:10px;letter-spacing:.22em;text-transform:uppercase}
+#hud{position:fixed;inset:0;pointer-events:none;z-index:2;padding:4vh 4vw;display:grid;grid-template-rows:auto 1fr auto;opacity:0;transition:opacity 2.5s}
+#hud.on{opacity:1}
+.top{display:flex;justify-content:space-between;align-items:flex-start}
+.title h1{margin:0;font-weight:300;font-size:clamp(28px,3.4vw,46px);letter-spacing:.32em}
+.title p{margin:.7em 0 0;color:var(--dim)}
+.meta{text-align:right;color:var(--dim);line-height:2}
+.meta b{color:var(--ink);font-weight:400}
+.bottom{display:grid;gap:18px}
+#chord{font-style:italic;font-weight:300;font-size:clamp(22px,2.4vw,34px);letter-spacing:.04em;transition:opacity .4s;min-height:1.3em}
+#sec{color:var(--dim)}
+#tl{position:relative;display:flex;height:28px;border-top:1px solid var(--line)}
+#tl div{position:relative;border-left:1px solid var(--line);padding:8px 0 0 6px;color:#efe6d855;white-space:nowrap;overflow:hidden;transition:color .8s}
+#tl div.cur{color:var(--ink)}
+#prog{position:absolute;top:-1px;left:0;height:1px;background:var(--ink);width:0}
+#ctl{position:fixed;right:4vw;top:calc(4vh + 70px);z-index:3;display:flex;gap:18px;opacity:0;transition:opacity 2.5s}
+#ctl.on{opacity:1}
+#ctl button{background:none;border:0;color:var(--dim);cursor:pointer;padding:0}
+#ctl button:hover{color:var(--ink)}
+#start{position:fixed;inset:0;z-index:5;display:grid;place-content:center;text-align:center;gap:22px;cursor:pointer;
+  background:radial-gradient(ellipse at 50% 60%,#16130f 0%,#07080b 70%);transition:opacity 1.6s}
+#start h1{margin:0;font-weight:300;font-size:clamp(48px,7vw,96px);letter-spacing:.5em;padding-left:.5em}
+#start .sub{color:var(--dim)}
+#start .go{margin-top:30px;color:var(--ink)}
+#start.hide{opacity:0;pointer-events:none}
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+
+<div id="start">
+  <h1>薄明</h1>
+  <div class="mono sub">hakumei — an étude for two guitars, in code</div>
+  <div class="mono sub">4/4 · 3/4 · 5/4 &nbsp;·&nbsp; ♩ = 128 &nbsp;·&nbsp; d major</div>
+  <div class="mono go" id="go">click to listen · headphones recommended</div>
+</div>
+
+<div id="hud">
+  <div class="top">
+    <div class="title"><h1>薄明</h1><p class="mono">hakumei · étude for two guitars</p></div>
+    <div class="meta mono"><div>♩ = 128 &nbsp; <b id="meter">4/4</b></div><div>bar <b id="bar">001</b> · beat <b id="beat">1</b></div></div>
+  </div>
+  <div></div>
+  <div class="bottom">
+    <div><div id="chord">—</div><div id="sec" class="mono">—</div></div>
+    <div id="tl" class="mono"><span id="prog"></span></div>
+  </div>
+</div>
+<div id="ctl" class="mono"><button id="rec">● rec</button><button id="restart">↺ restart</button></div>
+
+<script>
+"use strict";
+/* ==========================================================================
+   薄明 HAKUMEI — an étude for two guitars, in code.
+   Compositional grammar distilled from Songsterr transcriptions of toe
+   (孤独の発明 / Goodbye / Two Moons / Path / C / I Do Still Wrong):
+     · 4/4 home meter, one 3/4 movement, a single 5/4 turnaround bar
+     · Guitar I: 8th-note arpeggio interleaving an open-D pedal with
+       high melodic chord tones, 2-bar cells looped with micro-variation
+     · Guitar II enters late with a slow, singable line
+     · bass enters later still — sparse, syncopated, rests as phrasing
+     · drums: linear 16ths, ghost notes, hi-hat barks, 32nd drags,
+       ride sections, tom fills on phrase boundaries
+     · colour: Rhodes, music box / glockenspiel; additive arrangement
+   ========================================================================== */
+
+const BPM = 128, Q = 60 / BPM, E8 = Q / 2, S16 = Q / 4;
+const mtof = m => 440 * Math.pow(2, (m - 69) / 12);
+const rand = (a = 1) => (Math.random() * 2 - 1) * a;
+let ctx, mix, analyser, fftF, waveT, recDest, plate, room, gDelay;
+const bus = {};
+
+/* -------------------------------------------------------------- MIX GRAPH */
+function makeIR(sec, decay, bright) {
+  const sr = ctx.sampleRate, len = sr * sec | 0, b = ctx.createBuffer(2, len, sr);
+  for (let c = 0; c < 2; c++) {
+    const d = b.getChannelData(c); let lp = 0;
+    for (let i = 0; i < len; i++) {
+      const t = i / len, k = bright * (1 - t * .85);
+      lp += (Math.random() * 2 - 1 - lp) * k;
+      const pre = i < sr * .012 ? 0 : 1;                       // 12ms pre-delay
+      d[i] = lp * Math.pow(1 - t, decay) * pre;
+    }
+  }
+  return b;
+}
+function shaper(k) {
+  const n = 2048, c = new Float32Array(n);
+  for (let i = 0; i < n; i++) { const x = i / (n - 1) * 2 - 1; c[i] = Math.tanh(k * x) / Math.tanh(k); }
+  const w = ctx.createWaveShaper(); w.curve = c; w.oversample = "2x"; return w;
+}
+function eq(type, f, g, q = .8) { const e = ctx.createBiquadFilter(); e.type = type; e.frequency.value = f; e.gain.value = g; e.Q.value = q; return e; }
+function chain(...n) { for (let i = 0; i < n.length - 1; i++) n[i].connect(n[i + 1]); return n[n.length - 1]; }
+
+function initAudio() {
+  ctx = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: "playback" });
+  mix = ctx.createGain(); mix.gain.value = .68;
+  const glue = ctx.createDynamicsCompressor();
+  glue.threshold.value = -18; glue.ratio.value = 2.2; glue.attack.value = .02; glue.release.value = .25; glue.knee.value = 8;
+  const tape = shaper(1.15);
+  // tape wow & flutter: tiny modulated delay
+  const wow = ctx.createDelay(.05); wow.delayTime.value = .008;
+  const lfo1 = ctx.createOscillator(), lg1 = ctx.createGain(); lfo1.frequency.value = .42; lg1.gain.value = .00035;
+  const lfo2 = ctx.createOscillator(), lg2 = ctx.createGain(); lfo2.frequency.value = 6.1; lg2.gain.value = .00004;
+  lfo1.connect(lg1).connect(wow.delayTime); lfo2.connect(lg2).connect(wow.delayTime); lfo1.start(); lfo2.start();
+  const tilt = eq("highshelf", 11000, -2.5);
+  const lim = ctx.createDynamicsCompressor();
+  lim.threshold.value = -3; lim.ratio.value = 20; lim.attack.value = .002; lim.release.value = .08;
+  chain(mix, glue, tape, wow, tilt, lim);
+  lim.connect(ctx.destination);
+  analyser = ctx.createAnalyser(); analyser.fftSize = 2048; analyser.smoothingTimeConstant = .8;
+  fftF = new Uint8Array(1024); waveT = new Uint8Array(1024);
+  lim.connect(analyser);
+  recDest = ctx.createMediaStreamDestination(); lim.connect(recDest);
+
+  plate = ctx.createConvolver(); plate.buffer = makeIR(3.2, 3.2, .62);
+  room = ctx.createConvolver(); room.buffer = makeIR(.9, 2.2, .45);
+  chain(plate, eq("highpass", 220, 0), eq("highshelf", 6000, -4), mix);
+  const roomRet = ctx.createGain(); roomRet.gain.value = .55; chain(room, eq("highpass", 150, 0), roomRet, mix);
+
+  // dotted-8th delay with darkening feedback — the post-rock halo
+  gDelay = ctx.createDelay(2); gDelay.delayTime.value = Q * .75;
+  const fb = ctx.createGain(); fb.gain.value = .3; const dlp = eq("lowpass", 2600, 0, .5);
+  gDelay.connect(dlp).connect(fb).connect(gDelay);
+  const dRet = ctx.createGain(); dRet.gain.value = .5; dlp.connect(dRet).connect(mix); dRet.connect(plate);
+
+  const mk = (name, gain, pl, rm, dl, nodes = []) => {
+    const inp = ctx.createGain(), out = ctx.createGain(); out.gain.value = gain;
+    chain(inp, ...nodes, out); out.connect(mix);
+    [[pl, plate], [rm, room], [dl, gDelay]].forEach(([v, d]) => { if (v) { const s = ctx.createGain(); s.gain.value = v; out.connect(s).connect(d); } });
+    bus[name] = inp; bus[name + "Out"] = out;
+  };
+  /* Guitar rig: comp pedal → preamp (asymmetric tube-ish clip) → tone stack → 1x12 cab IR → mic EQ */
+  const rig = (drive, presence, cab) => {
+    const comp = ctx.createDynamicsCompressor();
+    comp.threshold.value = -26; comp.ratio.value = 4; comp.attack.value = .004; comp.release.value = .12; comp.knee.value = 6;
+    const pre = ctx.createGain(); pre.gain.value = drive;
+    const n = 4096, c = new Float32Array(n);
+    for (let i = 0; i < n; i++) { const x = i / (n - 1) * 2 - 1; c[i] = x > 0 ? Math.tanh(x * 1.2) : Math.tanh(x * .9) * 1.05; }
+    const tube = ctx.createWaveShaper(); tube.curve = c; tube.oversample = "4x";
+    const post = ctx.createGain(); post.gain.value = 1 / Math.tanh(drive * .9) * .9;
+    const cv = ctx.createConvolver(); cab.push(cv);
+    return [eq("highpass", 85, 0), comp, eq("peaking", 1800, 3, .7), pre, tube, post,
+      eq("lowshelf", 140, 2.5), eq("peaking", 420, -3.5, 1.1), eq("peaking", 2600, presence, .8),
+      cv, eq("peaking", 5200, 2, 1.5), eq("highshelf", 9000, -3)];
+  };
+  bus.cabs = [];
+  mk("g1", .95, .2, .12, .06, rig(2.2, 4.5, bus.cabs));   // bridge single-coil, edge of breakup
+  mk("g2", .8, .3, .1, .26, rig(2.8, 3, bus.cabs));       // neck pickup, warmer, a little hotter
+  mk("keys", .3, .4, 0, .15, [eq("lowshelf", 250, -2), eq("highshelf", 7000, -3)]);
+  mk("box", .2, .6, 0, .35, [eq("highpass", 400, 0)]);
+  mk("bass", .62, 0, .04, 0, [eq("lowpass", 2600, 0), shaper(1.6), eq("peaking", 800, 2, 1)]);
+  mk("drums", .78, .06, .5, 0, [eq("peaking", 300, -2, 1), shaper(1.2)]);
+
+  // Guitar II stereo double (Haas + slow modulation)
+  const dbl = ctx.createDelay(.05); dbl.delayTime.value = .016;
+  const dl = ctx.createOscillator(), dg = ctx.createGain(); dl.frequency.value = .5; dg.gain.value = .0015; dl.connect(dg).connect(dbl.delayTime); dl.start();
+  const pL = ctx.createStereoPanner(), pR = ctx.createStereoPanner(); pL.pan.value = -.55; pR.pan.value = .55;
+  bus.g2Out.disconnect(mix); bus.g2Out.connect(pL).connect(mix); bus.g2Out.connect(dbl).connect(pR).connect(mix);
+  // Rhodes auto-pan tremolo
+  const kp = ctx.createStereoPanner(), kl = ctx.createOscillator(), kg = ctx.createGain();
+  kl.frequency.value = Q * 0 + BPM / 60 * 1.5; kg.gain.value = .45; kl.connect(kg).connect(kp.pan); kl.start();
+  bus.keysOut.disconnect(mix); bus.keysOut.connect(kp).connect(mix);
+
+  // room tone: a breath of air under everything
+  const nb = ctx.createBuffer(1, ctx.sampleRate * 4, ctx.sampleRate), nd = nb.getChannelData(0); let b0 = 0;
+  for (let i = 0; i < nd.length; i++) { b0 = .985 * b0 + rand(.15); nd[i] = b0; }
+  const ns = ctx.createBufferSource(); ns.buffer = nb; ns.loop = true;
+  const ng = ctx.createGain(); ng.gain.value = .012; chain(ns, eq("lowpass", 2500, 0), ng, mix); ns.start();
+}
+
+/* ---------------------------------------------- KARPLUS–STRONG GUITAR */
+const ks = new Map();
+/* Extended Karplus–Strong (Jaffe–Smith):
+   · pick excitation = shaped pick impulse + filtered noise, pluck-position comb
+   · loop: one-zero damping (pitch-dependent brightness) + 2 dispersion allpasses
+     (string stiffness → slightly stretched, "steel" partials) + fractional tuning allpass
+   · read out through a magnetic pickup comb (bridge-pickup twang)                    */
+function ksString(f, sr, len, T60, bright, midi) {
+  const y = new Float32Array(len), Nt = sr / f;
+  const S = Math.min(.48, .3 + (midi - 40) * .004);           // loop LPF: low strings brighter sustain
+  const D = -.18, dD = (1 - D) / (1 + D);                         // dispersion allpass coefficient & its delay
+  const tot = Nt - S - 2 * dD;                                    // remaining delay to fill
+  const L = Math.max(2, Math.floor(tot - .1)), d = tot - L, C = (1 - d) / (1 + d);
+  const g = Math.pow(10, -3 / (T60 * f));
+  // excitation: pick + noise, then pluck-position comb
+  const exc = new Float32Array(L); let lp = 0;
+  const pw = Math.max(2, L * .08 | 0);
+  for (let i = 0; i < L; i++) {
+    lp += (Math.random() * 2 - 1 - lp) * bright;
+    const pick = i < pw ? Math.sin(Math.PI * i / pw) * 1.6 : 0;
+    exc[i] = lp * .8 + pick;
+  }
+  const P = Math.max(1, L * .14 | 0); for (let i = L - 1; i >= P; i--) exc[i] -= exc[i - P];
+  let x1 = 0, a1x = 0, a1y = 0, a2x = 0, a2y = 0, ax = 0, ay = 0;
+  for (let n = 0; n < len; n++) {
+    const r = n >= L ? y[n - L] : 0;
+    let v = g * ((1 - S) * r + S * x1); x1 = r;                    // damping
+    let t = D * v + a1x - D * a1y; a1x = v; a1y = t; v = t;          // stiffness
+    t = D * v + a2x - D * a2y; a2x = v; a2y = t; v = t;
+    t = C * v + ax - C * ay; ax = v; ay = t;                         // fine tuning
+    y[n] = (n < L ? exc[n] : 0) + t;
+  }
+  // pickup: comb at ~1/9 of the string → hollow, articulate electric attack
+  const pk = Math.max(1, Nt / 9 | 0), out = new Float32Array(len);
+  for (let n = 0; n < len; n++) out[n] = y[n] - .85 * (n >= pk ? y[n - pk] : 0);
+  return out;
+}
+function ksBuffer(midi) {
+  if (ks.has(midi)) return ks.get(midi);
+  const sr = ctx.sampleRate, f = mtof(midi);
+  const T60 = Math.max(1.8, Math.min(6, 6.2 - (midi - 40) * .1)), len = sr * Math.min(T60 * .8 + .3, 4.6) | 0;
+  // main string + a faint sympathetic/second-polarisation string → natural beating
+  const a = ksString(f, sr, len, T60, .62, midi), b = ksString(f * 1.0009, sr, len, T60 * 1.15, .4, midi);
+  const buf = ctx.createBuffer(1, len, sr), o = buf.getChannelData(0);
+  // pick scrape: very short bright noise burst on top of the string attack
+  const scrape = sr * .012 | 0; let sl = 0;
+  let pk = 0, dc = 0, px = 0;
+  for (let i = 0; i < len; i++) {
+    let x = a[i] + b[i] * .35;
+    if (i < scrape) { const nz = Math.random() * 2 - 1; sl = nz - sl * .2; x += sl * .35 * Math.exp(-i / (sr * .0025)); }
+    dc = x - px + .995 * dc; px = x; o[i] = dc; pk = Math.max(pk, Math.abs(dc));
+  }
+  const gn = .55 / pk; for (let i = 0; i < len; i++) o[i] *= gn;
+  ks.set(midi, buf); return buf;
+}
+const voices = { g1: [], g2: [] };
+function guitar(gt, t, midi, vel = .6, dur = 2.5, opt = {}) {
+  t += rand(.004); vel = Math.min(1, vel * 1.25 * (1 + rand(.12)));
+  const vs = voices[gt];
+  for (const v of vs) if (v.midi === midi && v.end > t) { v.g.gain.setTargetAtTime(0, t, .02); v.end = t; }   // same string re-pluck
+  const live = vs.filter(v => v.end > t);
+  if (live.length >= (opt.poly || 6)) { const o = live[0]; o.g.gain.setTargetAtTime(0, t, .06); o.end = t; }
+  const src = ctx.createBufferSource(); src.buffer = ksBuffer(midi);
+  const lp = ctx.createBiquadFilter(); lp.type = "lowpass"; lp.Q.value = .5;
+  // techniques -------------------------------------------------------------
+  //  legato (hammer-on / pull-off): skip the pick transient, softer & darker onset
+  //  slide: start from another pitch and glide in (implies legato)
+  //  mute (palm mute): short, dark, thumpy
+  const legato = opt.legato || opt.slide;
+  if (legato) { vel *= .78; }
+  if (opt.slide) {
+    src.playbackRate.setValueAtTime(Math.pow(2, opt.slide / 12), t);
+    src.playbackRate.setValueAtTime(Math.pow(2, opt.slide / 12), t + .015);
+    src.playbackRate.exponentialRampToValueAtTime(1, t + .09);
+  }
+  const bright = opt.mute ? .15 : legato ? .55 : (opt.bright || 1);
+  if (opt.mute) dur = Math.min(dur, .16);
+  // harder picking = brighter attack (dynamic tone, like real strings)
+  lp.frequency.setValueAtTime(opt.mute ? 900 + vel * 900 : 2500 + vel * vel * bright * 11000, t);
+  lp.frequency.setTargetAtTime(opt.mute ? 700 : 1800 + vel * 3500, t + .03, opt.mute ? .05 : .7);
+  const g = ctx.createGain(); g.gain.setValueAtTime(vel, t); g.gain.setTargetAtTime(0, t + dur, opt.mute ? .03 : .12);
+  if (opt.vib && dur > .5) {                                    // late vibrato on sustained melody notes
+    const l = ctx.createOscillator(), lg = ctx.createGain(); l.frequency.value = 5.2;
+    lg.gain.setValueAtTime(0, t); lg.gain.linearRampToValueAtTime(0, t + .25); lg.gain.linearRampToValueAtTime(9, t + .7);
+    l.connect(lg).connect(src.detune); l.start(t); l.stop(t + dur + .5);
+  }
+  src.connect(lp).connect(g).connect(bus[gt]);
+  const off = legato ? .011 : 0;
+  src.start(t, off); src.stop(t + Math.min(dur + .8, src.buffer.duration));
+  vs.push({ midi, g, end: t + dur + .3 }); if (vs.length > 40) vs.splice(0, 20);
+  vis(t, "note", { midi, inst: gt, vel, dur });
+}
+// dead note — fretting hand muting the strings: a percussive "chk"
+function dead(gt, t, vel = .5, n = 3) {
+  for (let i = 0; i < n; i++) {
+    const src = ctx.createBufferSource(); src.buffer = ksBuffer([50, 55, 59, 64][i % 4]);
+    const bp = ctx.createBiquadFilter(); bp.type = "bandpass"; bp.frequency.value = 1800 + Math.random() * 600; bp.Q.value = .9;
+    const g = ctx.createGain(); const tt = t + i * .006 + rand(.002);
+    g.gain.setValueAtTime(vel * 1.6, tt); g.gain.setTargetAtTime(0, tt + .012, .012);
+    src.connect(bp).connect(g).connect(bus[gt]); src.start(tt); src.stop(tt + .12);
+  }
+}
+// natural harmonic — glassy, near-sinusoidal, long ring
+function harmonic(gt, t, midi, vel = .4, dur = 3) {
+  const f = mtof(midi), g = ctx.createGain(), o = ctx.createOscillator(), o2 = ctx.createOscillator(), g2 = ctx.createGain();
+  o.frequency.value = f; o2.frequency.value = f * 2; g2.gain.value = .12;
+  g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(vel * .5, t + .004);
+  g.gain.setTargetAtTime(vel * .2, t + .01, .25); g.gain.setTargetAtTime(0, t + dur * .4, dur * .3);
+  o.connect(g); o2.connect(g2).connect(g); g.connect(bus[gt]);
+  [o, o2].forEach(x => { x.start(t); x.stop(t + dur * 1.6); });
+  vis(t, "note", { midi, inst: "box", vel, dur });
+}
+function strum(gt, t, notes, vel, dur, gap = .014) { notes.forEach((n, i) => guitar(gt, t + i * gap, n, vel * (1 - i * .04), dur, { poly: 8 })); }
+
+/* ----------------------------------------------------- RHODES / BOX / BASS */
+function rhodes(t, midi, vel = .5, dur = 2) {
+  const f = mtof(midi), c = ctx.createOscillator(), m = ctx.createOscillator(), mg = ctx.createGain();
+  const tine = ctx.createOscillator(), tg = ctx.createGain(), a = ctx.createGain();
+  c.frequency.value = f; m.frequency.value = f; tine.frequency.value = f * 7.02;
+  mg.gain.setValueAtTime(f * 2.4 * vel, t); mg.gain.setTargetAtTime(f * .25, t, .35);
+  tg.gain.setValueAtTime(f * .9 * vel, t); tg.gain.setTargetAtTime(0, t, .04);
+  m.connect(mg).connect(c.frequency); tine.connect(tg).connect(c.frequency);
+  a.gain.setValueAtTime(0, t); a.gain.linearRampToValueAtTime(vel * .32, t + .006);
+  a.gain.setTargetAtTime(vel * .12, t + .01, .9); a.gain.setTargetAtTime(0, t + dur, .25);
+  c.connect(a).connect(bus.keys);
+  [c, m, tine].forEach(o => { o.start(t); o.stop(t + dur + 1.5); });
+}
+function box(t, midi, vel = .5, dur = 1) {   // glockenspiel / music box: inharmonic bar partials
+  const f = mtof(midi), out = ctx.createGain(); out.connect(bus.box);
+  [[1, 1, 2.2], [2.756, .35, .6], [5.404, .18, .25], [8.933, .08, .12]].forEach(([r, a, d]) => {
+    const o = ctx.createOscillator(), g = ctx.createGain(); o.frequency.value = f * r;
+    g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(a * vel, t + .002); g.gain.exponentialRampToValueAtTime(.0001, t + d * (1 + dur * .3));
+    o.connect(g).connect(out); o.start(t); o.stop(t + d * 2 + 1);
+  });
+  vis(t, "note", { midi, inst: "box", vel, dur });
+}
+function bassNote(t, midi, dur, vel = .8) {
+  t += rand(.003);
+  const f = mtof(midi), o = ctx.createOscillator(), s = ctx.createOscillator(), lp = ctx.createBiquadFilter(), g = ctx.createGain();
+  o.type = "triangle"; o.frequency.value = f; s.frequency.value = f;
+  lp.type = "lowpass"; lp.Q.value = 1.2; lp.frequency.setValueAtTime(1300 * vel + 300, t); lp.frequency.setTargetAtTime(420, t, .12);
+  g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(vel * .5, t + .005);
+  g.gain.setTargetAtTime(vel * .32, t + .01, .25); g.gain.setTargetAtTime(0, t + dur * .95, .035);
+  const sg = ctx.createGain(); sg.gain.value = .8;
+  o.connect(lp); s.connect(sg).connect(lp); lp.connect(g).connect(bus.bass);
+  [o, s].forEach(x => { x.start(t); x.stop(t + dur + .3); });
+  vis(t, "note", { midi, inst: "bass", vel, dur });
+}
+
+/* ------------------------------------------------- DRUM SAMPLE FOUNDRY */
+const kit = {};
+async function render(dur, build) {
+  const sr = ctx.sampleRate, o = new OfflineAudioContext(1, Math.ceil(sr * dur), sr);
+  build(o); return o.startRendering();
+}
+function oNoise(o, dur) { const b = o.createBuffer(1, Math.ceil(o.sampleRate * dur), o.sampleRate), d = b.getChannelData(0);
+  for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1; const s = o.createBufferSource(); s.buffer = b; return s; }
+function oFilt(o, type, f, q = .7) { const b = o.createBiquadFilter(); b.type = type; b.frequency.value = f; b.Q.value = q; return b; }
+function oEnv(o, peak, dec, at = .001) { const g = o.createGain(); g.gain.setValueAtTime(0, 0); g.gain.linearRampToValueAtTime(peak, at); g.gain.exponentialRampToValueAtTime(.0001, at + dec); return g; }
+function metal(o, base, ratios, dur, bp, hp, peak) {
+  const f1 = oFilt(o, "bandpass", bp, .6), f2 = oFilt(o, "highpass", hp), e = oEnv(o, peak, dur);
+  ratios.forEach(r => { const s = o.createOscillator(); s.type = "square"; s.frequency.value = base * r; s.connect(f1); s.start(); s.stop(dur + .1); });
+  f1.connect(f2).connect(e).connect(o.destination);
+}
+async function buildCab() {   // synthesized 1x12 open-back cabinet + close mic impulse response
+  const b = await render(.06, o => {
+    const imp = o.createBuffer(1, 64, o.sampleRate); imp.getChannelData(0)[0] = 1;
+    const s = o.createBufferSource(); s.buffer = imp;
+    const taps = [[0, 1], [.00031, -.35], [.00087, .22], [.0019, -.12], [.0034, .07]];   // cone/baffle reflections
+    const sum = o.createGain();
+    taps.forEach(([d, g]) => { const dl = o.createDelay(.01); dl.delayTime.value = d; const gg = o.createGain(); gg.gain.value = g; s.connect(dl).connect(gg).connect(sum); });
+    let node = sum;
+    [["highpass", 75, 0, .7], ["peaking", 110, 5, 1.6], ["peaking", 1300, -2, 1], ["peaking", 2400, 4, 1.4],
+     ["peaking", 3600, -3, 2], ["lowpass", 5200, 0, 1.1], ["lowpass", 7000, 0, .7]].forEach(([t, f, gn, q]) => {
+      const fl = o.createBiquadFilter(); fl.type = t; fl.frequency.value = f; fl.gain.value = gn; fl.Q.value = q; node = node.connect(fl); });
+    node.connect(o.destination); s.start();
+  });
+  bus.cabs.forEach(c => c.buffer = b);
+}
+async function buildKit() {
+  const v = 3, jobs = [];
+  const add = (name, dur, fn) => { kit[name] = []; for (let i = 0; i < v; i++) jobs.push(render(dur, fn).then(b => kit[name].push(b))); };
+  add("kick", .6, o => {
+    const s = o.createOscillator(); s.frequency.setValueAtTime(130, 0); s.frequency.exponentialRampToValueAtTime(52, .07); s.frequency.exponentialRampToValueAtTime(44, .4);
+    s.connect(oEnv(o, 1, .42, .002)).connect(o.destination); s.start(); s.stop(.6);
+    const n = oNoise(o, .02); n.connect(oFilt(o, "bandpass", 3200, 1)).connect(oEnv(o, .5, .012)).connect(o.destination); n.start();
+    const b = o.createOscillator(); b.type = "triangle"; b.frequency.value = 900; b.connect(oEnv(o, .25, .01)).connect(o.destination); b.start(); b.stop(.05);
+  });
+  const snareFn = (nDec, bDec, lvl) => o => {
+    const n = oNoise(o, .5); n.connect(oFilt(o, "highpass", 1100)).connect(oFilt(o, "peaking", 5500, 1)).connect(oEnv(o, .7 * lvl, nDec)).connect(o.destination); n.start();
+    [[188, .75], [332, .35]].forEach(([f, a]) => { const s = o.createOscillator(); s.type = "triangle";
+      s.frequency.setValueAtTime(f * 1.25, 0); s.frequency.exponentialRampToValueAtTime(f, .015);
+      s.connect(oEnv(o, a * lvl, bDec)).connect(o.destination); s.start(); s.stop(.4); });
+  };
+  add("snare", .5, snareFn(.22, .1, 1));
+  add("ghost", .2, snareFn(.06, .035, .32));
+  const H = [2.0, 3.0, 4.16, 5.43, 6.79, 8.21];
+  add("hat", .12, o => metal(o, 205, H, .045, 10500, 7500, .55));
+  add("ohat", .6, o => metal(o, 205, H, .42, 10000, 7000, .5));
+  add("ride", 1.6, o => { metal(o, 300, [1, 1.47, 1.93, 2.53, 3.11, 3.92], 1.3, 6200, 3500, .22);
+    const b = o.createOscillator(); b.frequency.value = 2950; b.connect(oEnv(o, .05, .5)).connect(o.destination); b.start(); b.stop(1);
+    const n = oNoise(o, .05); n.connect(oFilt(o, "highpass", 8000)).connect(oEnv(o, .15, .03)).connect(o.destination); n.start(); });
+  add("crash", 2.6, o => { metal(o, 260, [1, 1.33, 1.71, 2.29, 2.87, 3.67], 2.3, 7000, 3000, .25);
+    const n = oNoise(o, 2.6); n.connect(oFilt(o, "highpass", 4500)).connect(oEnv(o, .35, 2.1, .004)).connect(o.destination); n.start(); });
+  const tom = (f0, f1, d) => o => { const s = o.createOscillator(); s.frequency.setValueAtTime(f0, 0); s.frequency.exponentialRampToValueAtTime(f1, d * .6);
+    s.connect(oEnv(o, .9, d)).connect(o.destination); s.start(); s.stop(d + .1);
+    const n = oNoise(o, .05); n.connect(oFilt(o, "bandpass", 2000, .8)).connect(oEnv(o, .2, .03)).connect(o.destination); n.start(); };
+  add("tomH", .5, tom(240, 175, .35)); add("tomL", .7, tom(140, 98, .5));
+  await Promise.all(jobs);
+}
+const PAN = { hat: .28, ohat: .28, ride: -.32, crash: -.2, tomH: .18, tomL: -.22 };
+let openHat = null;
+function drum(t, name, vel = .8) {
+  if (!kit[name]) return;
+  t += rand(.003) + (name === "ghost" ? .004 : 0);
+  if ((name === "hat" || name === "ohat") && openHat) { openHat.gain.setTargetAtTime(0, t, .012); openHat = null; }
+  const s = ctx.createBufferSource(); s.buffer = kit[name][Math.random() * kit[name].length | 0];
+  s.playbackRate.value = 1 + rand(.015);
+  const g = ctx.createGain(); g.gain.value = Math.pow(vel, 1.3) * (1 + rand(.08));
+  let node = s.connect(g);
+  if (PAN[name]) { const p = ctx.createStereoPanner(); p.pan.value = PAN[name]; node = node.connect(p); }
+  node.connect(bus.drums); s.start(t);
+  if (name === "ohat") openHat = g;
+  if (name === "kick" || name === "snare" || name === "crash") vis(t, name, vel);
+}
+
+/* -------------------------------------------------------------- HARMONY */
+const CH = {
+  D9:  { n: "Dmaj9",      root: 38, tops: [66, 73, 69, 64] },
+  Bm11:{ n: "Bm11",       root: 35, tops: [66, 74, 69, 64] },
+  G7:  { n: "Gmaj7♯11",   root: 31, tops: [66, 71, 73, 67] },
+  A6:  { n: "A6sus",      root: 33, tops: [64, 71, 69, 66] },
+  Em9: { n: "Em9",        root: 40, tops: [66, 71, 67, 62] },
+  Fm7: { n: "F♯m7",       root: 42, tops: [69, 73, 64, 66] },
+  G9:  { n: "Gmaj9",      root: 43, tops: [66, 71, 69, 74] },
+  A7:  { n: "A7sus4",     root: 45, tops: [67, 74, 64, 69] },
+  Bm9w:{ n: "Bm9",        root: 35, tops: [66, 73, 62, 69], pedal: 47 },
+  G9w: { n: "Gmaj9",      root: 31, tops: [66, 69, 71, 74], pedal: 43 },
+  DF:  { n: "D/F♯",       root: 42, tops: [66, 69, 74, 64], pedal: 42 },
+  As2: { n: "Asus2",      root: 33, tops: [64, 71, 69, 76], pedal: 45 },
+};
+const P1 = ["D9", "D9", "Bm11", "Bm11", "G7", "G7", "A6", "A6"].map(k => CH[k]);
+const P2 = ["Em9", "Em9", "Fm7", "Fm7", "G9", "G9", "A7", "A7"].map(k => CH[k]);
+const P3 = ["Bm9w", "Bm9w", "G9w", "G9w", "DF", "DF", "As2", "As2"].map(k => CH[k]);
+const PEDAL = 50; // open D string — the drone that never moves
+
+/* ==========================================================================
+   PATTERN LIBRARY — distilled from 43 Songsterr transcriptions of toe
+   ========================================================================== */
+/* Guitar cells. token = what:length[tech]
+     what: 0-3 chord-tone index · P pedal · I inner pedal (A3) · L low root · N next bar's low root
+     tech: h hammer/pull (legato) · s slide-in · m palm mute                                       */
+const G1 = {
+  // Two Moons: 8th arpeggio, low note on 1 and the "&" of 2 → a hidden 3+3+2 inside straight 8ths
+  moons:  ["P:1 1:1 2:1 P:1 0:1 3:1 2:1h 1:1", "P:1 0:1 2:1 P:1 3:1 2:1 0:1h 1:1"],
+  // Goodbye: pedal interleaved with tops, quarter-note top in the middle
+  bye:    ["0:1 2:2 P:1 1:1 P:1 3:1 P:1", "1:1 P:1 0:1 P:1 2:1 P:1 3:1h P:1"],
+  // 孤独の発明: short-long syncopation in 16ths (3/4 version)
+  kodoku: ["P:1 3:2 P:1 3:2 P:2 1:2 0:2", "P:1 2:2 P:1 2:2 P:2 0:2 1:2h"],
+  // After Image: 16th cascade, inner pedal A3 on every off-16th, next bass anticipated on step 15
+  image:  ["L:1 I:1 0:1 1:1h I:1 1:1 I:1 3:1 3:1 I:1 1:1 I:1 2:1h I:1 0:1 N:1",
+           "L:1 I:1 1:1 2:1h I:1 2:1 I:1 3:1 2:1 I:1 0:1 I:1 1:1h I:1 0:1 N:1"],
+};
+const INNER = 57;
+function lowOf(ch) { let n = ch.root + 12; while (n < 45) n += 12; return n; }
+function cell(gt, t0, ch, tok, unit, pedal, vel, opt = {}, next = ch) {
+  let pos = 0;
+  for (const tk of tok.split(" ")) {
+    const m = tk.match(/^([0-9PILN]):(\d+)([hsm]?)$/); const w = m[1], len = +m[2], tech = m[3];
+    const midi = w === "P" ? pedal : w === "I" ? INNER : w === "L" ? lowOf(ch) : w === "N" ? lowOf(next) : ch.tops[+w] + (opt.oct || 0);
+    const accent = pos === 0 ? 1.12 : (w === "P" || w === "I") ? .78 : 1;
+    guitar(gt, t0 + pos * unit + (pos % 2 ? unit * .04 : 0), midi, vel * accent, opt.ring || 2.6,
+      { ...opt, legato: tech === "h", slide: tech === "s" ? -2 : 0, mute: tech === "m" || opt.mute });
+    pos += len;
+  }
+}
+// Two Moons gtr II: dotted-8th dyads (steps 0,3,6,9,12) — 3-against-4 over the 8th arpeggio
+function dotted(gt, t0, notes, vel) { [0, 3, 6, 9, 12].forEach((s, k) => strum(gt, t0 + s * S16, notes, vel * (k ? .85 : 1), S16 * 6, .008)); }
+// Esoteric: 3+3+2 | 3+3+2 grid in 16ths
+const G332 = [0, 3, 6, 8, 11, 14];
+
+/* Melodies: [start(8ths in phrase), midi, length(8ths)] */
+const M1 = [[0,69,2],[2,66,2],[4,64,3],[7,62,1],[8,64,6],[16,71,2],[18,69,1],[19,66,5],[26,64,1],[27,66,1],[28,69,2],[30,71,2],
+            [32,73,3],[35,71,1],[36,69,4],[40,66,2],[42,67,2],[44,69,4],[48,76,3],[51,74,1],[52,73,2],[54,69,2],[56,71,8]];
+const M2 = [[0,69,2],[2,71,2],[4,73,3],[7,74,1],[8,76,6],[14,74,1],[15,73,1],[16,71,2],[18,69,1],[19,66,5],[26,64,1],[27,66,1],[28,69,2],[30,71,2],
+            [32,73,3],[35,74,1],[36,76,4],[40,78,2],[42,76,2],[44,74,4],[48,76,3],[51,74,1],[52,73,2],[54,69,2],[56,74,8]];
+const MW = [[0,74,3],[3,73,1],[4,71,2],[6,69,6],[12,71,2],[14,74,2],[16,78,2],[18,76,6],[24,74,3],[27,73,1],[28,69,2],[30,66,6],[36,64,2],[38,66,2],[40,69,2],[42,64,6]];
+// Tremolo + Delay: quarter-note repeated melody — the hypnotic pulse line
+const MQ = [69, 69, 66, 66, 71, 71, 69, 64];
+function melody(fn, t0, phrase, bar, epb, tr = 0, vel = .6) {
+  let prev = null;
+  for (const [s, m, l] of phrase) {
+    if ((s / epb | 0) === bar) fn(t0 + (s - bar * epb) * E8, m + tr, vel, l * E8, prev !== null && l >= 4 && Math.abs(m - prev) <= 3 ? Math.sign(prev - m) * 2 || -2 : 0);
+    prev = m;
+  }
+}
+
+/* Bass. tokens in a given unit: R root · 5 fifth · O octave · N next root (anticipation) · r rest, suffix h = legato */
+const BS = {
+  whole: ["R:16", 16], pick: ["R:12 5:1 5:1 r:1 N:1", 16],                    // After Image: hold, then lead in
+  b1: ["R:2 r:1 R:1 r:1 5:1 O:1 N:1", 8], b2: ["R:1 R:1 r:1 R:1 5:1 R:1 O:1 N:1", 8],
+  b3: ["R:3 5:1 O:2", 8], esot: ["R:1 R:1 R:1 R:1 r:2 R:1 r:1 R:1 r:2 O:1 R:1 r:1 5:1 r:1", 16], // Esoteric xxxx..x.x..xx.x.
+};
+function bassline(t0, ch, pat, vel = .8, next = ch) {
+  const [str, div] = BS[pat], unit = div === 16 ? S16 : E8; let pos = 0;
+  for (const tk of str.split(" ")) {
+    const [w, l] = tk.split(":"), len = +l;
+    if (w !== "r") bassNote(t0 + pos * unit, (w === "N" ? next.root : ch.root) + (w === "5" ? 7 : w === "O" ? 12 : 0), len * unit, vel * (pos === 0 ? 1 : .82));
+    pos += len;
+  }
+}
+
+/* ---------------------------------------------------------------- DRUMS */
+const GR = {
+  hat:   { H: "x.x.x.x.x.x.x.x.", K: "x..............." },
+  A:     { K: "x......x..x.....", S: "....X..g.g..X..g", H: "x.x.x.xox.x.x.x." },
+  A2:    { K: "x.....x...x..x..", S: "..g.X.g..g..X.g.", H: "x.x.x.x.x.x.xox." },
+  ride:  { R: "x.x.x.x.x.x.x.x.", K: "x.......x.x.....", S: "....X......gX.g." },
+  ride2: { R: "x.x.x.x..x.x.x..", K: "x.....x.x.......", S: "..g.X...XX.X.X..", H: "...............o" },
+  // Sonny Boy Rhapsody: K x..x....x..x...., snare 2 + "&4", 16th hats with breathing gaps, ghosts
+  sonny: { K: "x..x....x..x....", S: "..g.X..g.g...Xg.", H: "xxxx.xxxxxxxxx.x" },
+  // Esoteric-locked: kick on the 3+3+2 grid
+  esot:  { K: "x..x..x.x.......", S: "....X..g.g.gX..g", H: "xxxx.xxxxxxxxx.x" },
+  esot2: { K: "x..x..x.x..x..x.", S: "....X.......X...", H: "x.x.x.x.x.x.x.x.", C: "x..............." },
+  w1:    { R: "x.x.x.x.x.x." },
+  w2:    { R: "x.x.x.x.x.x.", K: "x.....x.....", S: "..g...g.X..g" },
+  // TODO Y NADA: open hats on every 8th upbeat, closed on the beat — the disco bark that lifts a climax
+  todo:  { K: "x.......x..x....", S: "....X..g..g.X...", O: "..x...x...x...x.", H: "x...x...x...x..." },
+  todo2: { K: "x..x....x.x.....", S: "....X..g.g..X.gX", O: "..x...x...x...x.", H: "x...x...x...x..." },
+};
+const FILL = {
+  drag: { from: 14, ev: [[14, "snare", .45], [14.5, "snare", .6], [15, "snare", .78], [15.5, "snare", 1]] },
+  tom:  { from: 8, ev: [[8, "tomH", .9], [9, "tomH", .55], [10, "tomH", .8], [11, "tomL", .9], [12, "tomL", .7], [13, "snare", .85], [14, "tomL", .85], [14.5, "snare", .6], [15, "snare", .8], [15.5, "snare", 1]] },
+  wdrag:{ from: 10, ev: [[10, "snare", .4], [10.5, "snare", .55], [11, "snare", .7], [11.5, "snare", .9]] },
+  // Esoteric-style 16th snare burst
+  burst:{ from: 9, ev: [[9, "snare", .5], [10, "snare", .6], [11, "snare", .7], [12, "snare", .8], [13, "tomH", .85], [14, "tomL", .9], [15, "tomL", 1]] },
+};
+const LANE = { K: "kick", S: "snare", H: "hat", O: "ohat", R: "ride", C: "crash", t: "tomH", T: "tomL" };
+function groove(t0, name, steps, opt = {}) {
+  const G = GR[name], fill = opt.fill && FILL[opt.fill], m = opt.vel || 1;
+  for (const lane in G) for (let s = 0; s < steps; s++) {
+    const c = G[lane][s]; if (!c || c === ".") continue;
+    if (fill && s >= fill.from && lane !== "C") continue;
+    let nm = LANE[lane], v = c === "X" ? 1 : .78;
+    if (lane === "S" && c === "g") { nm = "ghost"; v = .9; }
+    if (lane === "H") { if (c === "o") { nm = "ohat"; v = .7; } else v = s % 4 === 0 ? .8 : s % 2 === 0 ? .58 : .4; }
+    if (lane === "O") v = .62;
+    if (lane === "R") v = s % 4 === 0 ? .75 : .55;
+    const swing = s % 2 ? S16 * .07 : 0;                     // laid-back 16th feel
+    drum(t0 + s * S16 + swing, nm, v * m);
+  }
+  if (fill) for (const [s, n, v] of fill.ev) drum(t0 + s * S16, n, v * m);
+  if (opt.crash) { drum(t0, "crash", .85 * m); drum(t0, "kick", m); }
+}
+
+/* ------------------------------------------------------------ ARRANGEMENT
+   Form principles from the data: ostinati loop long; instruments enter late and
+   one by one; a long 3/4 movement; odd bars are rare punctuation, not the norm.   */
+const g2 = (t, midi, v, d, sl) => guitar("g2", t, midi, v, d + .05, { vib: true, bright: 1.1, slide: sl });
+const g2hot = (t, midi, v, d, sl) => guitar("g2", t, midi, v, d + .05, { vib: true, bright: 1.6, slide: sl });
+const rhChord = (t, ch, v, d) => [ch.root + 24, ...ch.tops.map(n => n - 12)].forEach((n, i) => rhodes(t + i * .006, n, v, d));
+const P4 = ["Bm11", "Bm11", "G7", "G7", "Em9", "Em9", "Fm7", "Fm7"].map(k => CH[k]);
+const nx = (P, i) => P[(i + 1) % P.length];
+
+const SONG = [
+  { id: "序", name: "i. 序 — prelude", beats: 4, bars: 8, pal: 0, ch: i => P1[i],
+    play(i, t) { cell("g1", t, P1[i], G1.moons[i % 2], E8, PEDAL, .48 + i * .015);
+      if (i % 4 === 3) [74, 69].forEach((n, k) => harmonic("g2", t + Q * (2 + k * 1.5), n, .35, 4));   // 12th-fret harmonics
+      if (i === 7) groove(t, "hat", 16, { fill: "drag", vel: .55 }); } },
+
+  { id: "主題", name: "ii. 主題 — theme", beats: 4, bars: 16, pal: 1, ch: i => P1[i % 8],
+    play(i, t) { const c = P1[i % 8];
+      cell("g1", t, c, G1.bye[i % 2], E8, PEDAL, .55);
+      melody(g2, t, M1, i % 8, 8, 0, .62);
+      if (i < 4) groove(t, "hat", 16, { vel: .75 });
+      else groove(t, i % 2 ? "A2" : "A", 16, { crash: i === 4 || i === 8, fill: i === 7 ? "drag" : i === 15 ? "tom" : null });
+      if (i >= 4) bassline(t, c, i < 8 ? (i % 2 ? "pick" : "whole") : "b1", .8, nx(P1, i % 8));
+      if (i >= 8 && i % 4 === 0) box(t + Q * 3.5, c.tops[1] + 12, .35, 1); } },
+
+  { id: "展開", name: "iii. 展開 — drift", beats: 4, bars: 8, pal: 2, ch: i => P2[i],
+    play(i, t) { const c = P2[i];
+      cell("g1", t, c, G1.moons[i % 2], E8, PEDAL, .5);
+      dotted("g2", t, [c.tops[i % 2 ? 1 : 0], c.tops[2] + 12], .4);
+      if (i % 2 === 0) rhChord(t, c, .45, Q * 7.5);
+      groove(t, i % 2 ? "ride2" : "ride", 16, { crash: i === 0, fill: i === 7 ? "drag" : null });
+      bassline(t, c, "b1", .8, nx(P2, i)); } },
+
+  { id: "交差", name: "iv. 交差 — crossing (3+3+2)", beats: 4, bars: 8, pal: 7, ch: i => P4[i],
+    play(i, t) { const c = P4[i];
+      G332.forEach((s, k) => strum("g1", t + s * S16, k % 3 === 0 ? [lowOf(c), c.tops[0], c.tops[2]] : [c.tops[0], c.tops[2]], k ? .5 : .62, S16 * 2.6));
+      // the gaps get dead-note "chk"s — Leave Word's percussive right hand
+      [2, 5, 10, 13].forEach(s => dead("g1", t + s * S16, .35));
+      // gtr II: Esoteric top line on xx.xx.x.xx.xx... with hammer-ons
+      const top = [c.tops[1] + 12, c.tops[3] + 12, c.tops[1] + 12, c.tops[0] + 12];
+      [0, 1, 3, 4, 6, 8, 9, 11, 12].forEach((s, k) => guitar("g2", t + s * S16, top[k % 4], .5, S16 * 2.5, { legato: k % 3 === 1, bright: 1.3 }));
+      bassline(t, c, "esot", .85);
+      groove(t, i < 4 ? "esot" : "esot2", 16, { crash: i === 0 || i === 4, fill: i === 3 ? "drag" : i === 7 ? "burst" : null }); } },
+
+  { id: "·", name: "v. 折 — fold (5/4)", beats: 5, bars: 1, pal: 2, ch: () => CH.A7,
+    play(i, t) { const c = CH.A7, hits = [0, 3, 6, 10, 13, 16];          // 3+3+4+3+3+4 over twenty 16ths
+      hits.forEach((s, k) => { strum("g1", t + s * S16, [PEDAL, ...c.tops].slice(0, 4), .6, S16 * 2.5);
+        strum("g2", t + s * S16 + .01, c.tops.map(n => n + (k > 3 ? 12 : 0)), .5, S16 * 2.5);
+        drum(t + s * S16, "kick", .9); bassNote(t + s * S16, c.root - 12 + (k === 5 ? 12 : 0), S16 * 2.4, .9); });
+      [1, 2, 4, 5, 7, 8, 9, 11, 12, 14, 15, 17, 18, 19].forEach(s => drum(t + s * S16, s > 16 ? "tomL" : "ghost", s > 16 ? .7 + (s - 17) * .1 : .9));
+      drum(t, "crash", .8); drum(t + 10 * S16, "crash", .6); } },
+
+  { id: "三拍子", name: "vi. 三拍子 — waltz in dusk", beats: 3, bars: 16, pal: 3, ch: i => P3[i % 8],
+    play(i, t) { const c = P3[i % 8];
+      cell("g1", t, c, G1.kodoku[i % 2], S16, c.pedal, .5);
+      melody(box, t, MW, i % 8, 6, 12, i < 8 ? .45 : .35);
+      if (i >= 8) melody(g2, t, MW, i % 8, 6, 0, .5);
+      if (i >= 4) bassline(t, c, "b3", .7);
+      if (i >= 8 && i % 2 === 0) rhChord(t, c, .38, Q * 5.5);
+      if (i % 8 === 7) harmonic("g2", t + Q, c.tops[2] + 12, .3, 3);
+      if (i >= 2) groove(t, i < 8 ? "w1" : "w2", 12, { vel: i < 8 ? .55 : .8, fill: i === 15 ? "wdrag" : null }); } },
+
+  { id: "間", name: "vii. 間 — breath", beats: 4, bars: 4, pal: 4, ch: i => i < 2 ? CH.G7 : CH.A7,
+    play(i, t) { const c = i < 2 ? CH.G7 : CH.A7;
+      // Tremolo + Delay: a lone quarter-note pulse melody over a held chord
+      if (i % 2 === 0) { strum("g1", t, [PEDAL, ...c.tops], .42, Q * 8, .03); rhChord(t, c, .3, Q * 8); }
+      for (let k = 0; k < 4; k++) guitar("g2", t + k * Q, MQ[(i * 4 + k) % 8] + 12, .42 - (k % 2) * .08, Q * .9, { bright: .9 });
+      if (i >= 2) for (let s = 0; s < 16; s++) { const p = ((i - 2) * 16 + s) / 32;
+        drum(t + s * S16, s % 2 ? "ghost" : "snare", .1 + p * p * .9); if (s % 4 === 0) bassNote(t + s * S16, c.root - 12, Q * .9, .3 + p * .6); }
+      if (i === 3) [12, 13, 14, 15].forEach(s => drum(t + s * S16, "tomL", .8)); } },
+
+  { id: "薄明", name: "viii. 薄明 — first light", beats: 4, bars: 16, pal: 5, ch: i => P1[i % 8],
+    play(i, t) { const c = P1[i % 8];
+      cell("g1", t, c, G1.image[i % 2], S16, PEDAL, .46, { bright: 1.3, ring: 1.4 }, nx(P1, i % 8));
+      melody(g2hot, t, M2, i % 8, 8, 0, .72);
+      if (i >= 8) melody(box, t, M2, i % 8, 8, 12, .3);
+      if (i % 2 === 0) rhChord(t, c, .42, Q * 7.5);
+      groove(t, i < 8 ? (i % 2 ? "sonny" : "A") : (i % 2 ? "todo2" : "todo"), 16, { crash: i % 4 === 0, fill: i === 7 ? "drag" : i === 15 ? "tom" : null });
+      bassline(t, c, "b2", .85, nx(P1, i % 8)); } },
+
+  { id: "余韻", name: "ix. 余韻 — afterglow", beats: 4, bars: 8, pal: 6, ch: i => P1[i],
+    play(i, t) { const c = P1[i];
+      if (i === 0) { drum(t, "crash", .9); drum(t, "kick", 1); bassNote(t, c.root, Q * 4, .8); }
+      if (i < 7) cell("g1", t, c, G1.moons[i % 2], E8, PEDAL, .5 - i * .035);
+      else { strum("g1", t, [PEDAL, 57, ...c.tops, 78], .5, 9, .045); harmonic("g2", t + Q * 2, 81, .3, 5); harmonic("g2", t + Q * 3, 74, .25, 5); rhChord(t, c, .3, 8); }
+      if (i >= 2 && i < 7) melody(box, t, M1, i, 8, 12, .25 - i * .02); } },
+  { id: "", name: "—", beats: 4, bars: 3, pal: 6, ch: () => CH.D9, play() {} },
+];
+const SEC_START = []; { let acc = 0; for (const s of SONG) { SEC_START.push(acc); acc += s.bars * s.beats * Q; } SONG.total = acc; }
+
+/* -------------------------------------------------------------- SCHEDULER */
+let cur, nextT, startT, timer, playing = false;
+function scheduler() {
+  while (playing && nextT < ctx.currentTime + .4) {
+    const s = SONG[cur.s];
+    if (!s) { playing = false; break; }
+    s.play(cur.b, nextT);
+    vis(nextT, "bar", { s: cur.s, b: cur.b, beats: s.beats });
+    nextT += s.beats * Q;
+    if (++cur.b >= s.bars) { cur.b = 0; cur.s++; }
+  }
+}
+function play() {
+  if (ctx.state !== "running") ctx.resume();
+  evq.length = 0; voices.g1.length = voices.g2.length = 0;
+  cur = { s: 0, b: 0 }; nextT = startT = ctx.currentTime + .2; playing = true;
+  clearInterval(timer); timer = setInterval(scheduler, 25); scheduler();
+}
+
+/* --------------------------------------------------- EVENTS → VISUAL STATE */
+const evq = [];
+function vis(t, type, v) { evq.push({ t, type, v }); }
+const V = { kick: 0, snare: 0, crash: 0, energy: 0, bar: null, barNo: 0 };
+const NOTES = []; const MAXN = 40;
+const PALS = [ // [top, bottom, accent, energy]
+  [[.035, .045, .07], [.09, .07, .06], [1, .86, .70], .25],
+  [[.04, .055, .09], [.15, .10, .07], [1, .80, .58], .55],
+  [[.03, .07, .075], [.08, .11, .10], [.70, .95, .90], .6],
+  [[.06, .045, .10], [.15, .08, .11], [1, .72, .82], .45],
+  [[.02, .02, .03], [.05, .04, .04], [.9, .85, .8], .3],
+  [[.09, .06, .05], [.26, .14, .07], [1, .78, .48], 1],
+  [[.08, .09, .12], [.17, .15, .14], [.88, .92, 1], .35],
+  [[.03, .05, .06], [.12, .07, .04], [1, .62, .32], .8],
+];
+const P = { top: [...PALS[0][0]], bot: [...PALS[0][1]], acc: [...PALS[0][2]], en: .2 }, PT = { i: 0 };
+const $ = id => document.getElementById(id);
+function buildTimeline() {
+  const tl = $("tl"); SONG.forEach((s, i) => { if (!s.id) return; const d = document.createElement("div");
+    d.style.width = (s.bars * s.beats * Q / SONG.total * 100) + "%"; d.textContent = s.id; d.dataset.i = i; tl.appendChild(d); });
+}
+function updateVis(dt) {
+  const now = ctx ? ctx.currentTime : 0;
+  evq.sort((a, b) => a.t - b.t);
+  while (evq.length && evq[0].t <= now) {
+    const e = evq.shift();
+    if (e.type === "kick") V.kick = Math.max(V.kick, e.v);
+    else if (e.type === "snare") V.snare = Math.max(V.snare, e.v);
+    else if (e.type === "crash") V.crash = 1;
+    else if (e.type === "note") {
+      const n = e.v, inst = n.inst;
+      const y = inst === "bass" ? -.32 : inst === "g1" ? -.05 + rand(.16) : inst === "g2" ? .2 + rand(.07) : .34 + rand(.06);
+      NOTES.push({ x: (n.midi - 62) / 26, y, t: now, inst, vel: n.vel, dur: n.dur, seed: Math.random() });
+      if (NOTES.length > MAXN) NOTES.shift();
+    } else if (e.type === "bar") {
+      const s = SONG[e.v.s]; V.bar = { ...e.v, t: e.t }; V.barNo++;
+      PT.i = s.pal; $("meter").textContent = s.beats + "/4";
+      $("bar").textContent = String(V.barNo).padStart(3, "0");
+      const ch = s.ch(e.v.b); if ($("chord").textContent !== ch.n) $("chord").textContent = ch.n;
+      $("sec").textContent = s.name;
+      document.querySelectorAll("#tl div").forEach(d => d.classList.toggle("cur", +d.dataset.i === e.v.s));
+    }
+  }
+  if (V.bar) { const s = SONG[V.bar.s]; $("beat").textContent = 1 + Math.min(s.beats - 1, (now - V.bar.t) / Q | 0); }
+  if (playing || V.bar) $("prog").style.width = Math.min(100, (now - startT) / SONG.total * 100) + "%";
+  const k = r => 1 - Math.exp(-dt * r);
+  V.kick *= 1 - k(8); V.snare *= 1 - k(10); V.crash *= 1 - k(1.2);
+  const tp = PALS[PT.i];
+  for (let j = 0; j < 3; j++) { P.top[j] += (tp[0][j] - P.top[j]) * k(.6); P.bot[j] += (tp[1][j] - P.bot[j]) * k(.6); P.acc[j] += (tp[2][j] - P.acc[j]) * k(.8); }
+  P.en += (tp[3] - P.en) * k(.5);
+}
+
+/* ------------------------------------------------------------------ WEBGL2 */
+const cv = $("gl"), gl = cv.getContext("webgl2", { antialias: false, alpha: false, preserveDrawingBuffer: false });
+const VS = `#version 300 es
+in vec2 p; out vec2 vUv; void main(){ vUv = p*.5+.5; gl_Position = vec4(p,0,1); }`;
+const SCENE = `#version 300 es
+precision highp float;
+in vec2 vUv; out vec4 o;
+uniform vec2 R; uniform float T, K, S, CR, EN;
+uniform vec3 TOP, BOT, ACC;
+uniform vec4 N[${MAXN}]; uniform vec4 NI[${MAXN}];
+uniform sampler2D WAVE;
+float h21(vec2 p){ p = fract(p*vec2(233.34, 851.73)); p += dot(p, p+23.45); return fract(p.x*p.y); }
+float vnoise(float x){ float i=floor(x), f=fract(x); return mix(h21(vec2(i,1.7)), h21(vec2(i+1.,1.7)), f*f*(3.-2.*f)); }
+vec3 instCol(float k){ return k<.5 ? vec3(1.,.87,.72) : k<1.5 ? vec3(1.,.95,.88) : k<2.5 ? vec3(.75,.85,1.) : vec3(1.,.6,.4); }
+void main(){
+  vec2 uv = (gl_FragCoord.xy - .5*R)/R.y;
+  float asp = R.x/R.y;
+  // sky gradient
+  vec3 col = mix(BOT, TOP, smoothstep(-.6, .6, uv.y));
+  // horizon glow — dawn
+  col += ACC * .12 * EN * exp(-pow((uv.y + .18)*3.2, 2.)) * (1. + .3*K);
+  // volumetric light shafts from upper right
+  vec2 lp = vec2(asp*.55, .62); vec2 d = uv - lp;
+  float a = atan(d.y, d.x), r = length(d);
+  float shafts = pow(vnoise(a*38. + T*.07), 3.) * .6 + pow(vnoise(a*91. - T*.05), 4.) * .4;
+  col += ACC * shafts * exp(-r*1.1) * (.06 + .14*EN) * smoothstep(-.2, .5, uv.y + .3);
+  // dust motes drifting in the light
+  for (int l=0; l<3; l++){
+    float fl = float(l), sc = 18. + fl*14.;
+    vec2 q = uv*sc + vec2(T*(.12+fl*.05), T*(.05 + fl*.02)) + fl*7.3;
+    vec2 id = floor(q), f = fract(q) - .5;
+    float hsh = h21(id);
+    vec2 off = vec2(h21(id+3.1), h21(id+5.7)) - .5;
+    float dm = length(f - off*.7);
+    float tw = .5 + .5*sin(T*(1.+hsh*3.) + hsh*40.);
+    col += ACC * smoothstep(.06, .0, dm) * step(.82, hsh) * tw * (.25 - fl*.06) * exp(-r*.6) * (.5 + EN);
+  }
+  // notes as lens bokeh
+  for (int i=0; i<${MAXN}; i++){
+    vec4 n = N[i]; vec4 m = NI[i];
+    if (n.w <= 0.) continue;
+    float age = n.z;
+    vec2 c = vec2(n.x*asp*.8, n.y + age*.035 + sin(age*.6 + m.w*6.28)*.01);
+    float rad = (.008 + .028*m.y + .012*min(m.z, 2.)) * (1. + age*.18);
+    float dd = length(uv - c);
+    float disk = smoothstep(rad, rad*.9, dd);
+    float rim = smoothstep(rad*.78, rad*.97, dd) * disk;
+    float fade = exp(-age*(m.x > 2.5 ? 1.6 : .55)) * (1. - exp(-age*40.));
+    vec3 ic = mix(instCol(m.x), ACC, .45);
+    col += ic * (disk*.07 + rim*.16) * fade * (.6 + m.y);
+    col += ic * exp(-dd*dd/(rad*rad*.15)) * .12 * fade * exp(-age*3.);   // strike core
+  }
+  // waveform: a single hairline, like a pencil stroke on paper
+  float wx = vUv.x;
+  float w = texture(WAVE, vec2(wx, .5)).r - .5;
+  float wy = -.27 + w*.16;
+  float line = smoothstep(1.4/R.y, 0., abs(uv.y - wy)) * smoothstep(0., .25, wx) * smoothstep(1., .75, wx);
+  col += vec3(1., .95, .88) * line * .35;
+  // drum response: breath of exposure, crash bloom
+  col *= 1. + K*.18;
+  col += ACC * CR * .12 * exp(-r*.8);
+  col += vec3(1.,.95,.9) * S * .025;
+  o = vec4(col, 1.);
+}`;
+const POST = `#version 300 es
+precision highp float;
+in vec2 vUv; out vec4 o;
+uniform sampler2D SC; uniform vec2 R; uniform float T, K;
+float h(vec2 p){ return fract(sin(dot(p, vec2(12.9898, 78.233)))*43758.5453); }
+vec3 aces(vec3 x){ return clamp((x*(2.51*x+.03))/(x*(2.43*x+.59)+.14), 0., 1.); }
+void main(){
+  // gate weave
+  vec2 uv = vUv + vec2(sin(T*1.7)*.0004, sin(T*2.3 + 1.)*.0005);
+  vec2 cc = uv - .5;
+  // radial chromatic aberration
+  float ca = .0025 + K*.0015;
+  vec3 col = vec3(texture(SC, uv - cc*ca).r, texture(SC, uv).g, texture(SC, uv + cc*ca).b);
+  // mip-chain bloom / halation (warm-tinted, like film)
+  vec3 bl = textureLod(SC, uv, 3.).rgb*.5 + textureLod(SC, uv, 5.).rgb*.35 + textureLod(SC, uv, 7.).rgb*.25;
+  col += bl * vec3(1., .82, .7) * .55;
+  col = aces(col * 1.35);
+  // split-tone: cool shadows, warm highlights
+  float lum = dot(col, vec3(.299,.587,.114));
+  col = mix(col * vec3(.92, .97, 1.06), col * vec3(1.05, 1., .92), smoothstep(.1, .7, lum));
+  col = pow(col, vec3(.95));
+  // vignette
+  col *= mix(1., smoothstep(1.05, .25, length(cc*vec2(R.x/R.y, 1.)) ), .75);
+  // film grain (luma-weighted)
+  float g = h(gl_FragCoord.xy + fract(T*13.)*100.) - .5;
+  col += g * .045 * (1. - lum*.6);
+  o = vec4(col, 1.);
+}`;
+function sh(type, src) { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; }
+function prog(fs) { const p = gl.createProgram(); gl.attachShader(p, sh(gl.VERTEX_SHADER, VS)); gl.attachShader(p, sh(gl.FRAGMENT_SHADER, fs));
+  gl.bindAttribLocation(p, 0, "p"); gl.linkProgram(p); if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+  const u = {}; const n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS);
+  for (let i = 0; i < n; i++) { const nm = gl.getActiveUniform(p, i).name.replace("[0]", ""); u[nm] = gl.getUniformLocation(p, nm); }
+  return { p, u }; }
+const scene = prog(SCENE), post = prog(POST);
+const vbo = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+const waveTex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, waveTex); gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, 1024, 1, 0, gl.RED, gl.UNSIGNED_BYTE, new Uint8Array(1024).fill(128));
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+let fbo, fTex, scale = Math.min(1, 1.5 / devicePixelRatio);
+function resize() {
+  cv.width = innerWidth * devicePixelRatio * scale | 0; cv.height = innerHeight * devicePixelRatio * scale | 0;
+  if (fTex) gl.deleteTexture(fTex); if (fbo) gl.deleteFramebuffer(fbo);
+  fTex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, fTex);
+  const levels = 1 + Math.floor(Math.log2(Math.max(cv.width, cv.height)));
+  gl.texStorage2D(gl.TEXTURE_2D, levels, gl.RGBA8, cv.width, cv.height);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  fbo = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, fTex, 0);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+}
+addEventListener("resize", resize); resize();
+
+const NA = new Float32Array(MAXN * 4), NIA = new Float32Array(MAXN * 4), INST = { g1: 0, g2: 1, box: 2, bass: 3 };
+let last = performance.now(), T = 0, fAcc = 0, fN = 0;
+function frame(now) {
+  const dt = Math.min(.05, (now - last) / 1000); last = now; T += dt;
+  fAcc += dt; if (++fN === 40) { const fps = fN / fAcc; if (fps < 50 && scale > .4) { scale *= .85; resize(); } fAcc = 0; fN = 0; }
+  if (ctx) { updateVis(dt); analyser.getByteTimeDomainData(waveT);
+    gl.bindTexture(gl.TEXTURE_2D, waveTex); gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 1024, 1, gl.RED, gl.UNSIGNED_BYTE, waveT); }
+  const at = ctx ? ctx.currentTime : 0;
+  NA.fill(0); NIA.fill(0);
+  NOTES.forEach((n, i) => { NA.set([n.x, n.y, Math.max(0, at - n.t), 1], i * 4); NIA.set([INST[n.inst], n.vel, n.dur, n.seed], i * 4); });
+  // pass 1: scene
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo); gl.viewport(0, 0, cv.width, cv.height);
+  gl.useProgram(scene.p); const u = scene.u;
+  gl.uniform2f(u.R, cv.width, cv.height); gl.uniform1f(u.T, T);
+  gl.uniform1f(u.K, V.kick); gl.uniform1f(u.S, V.snare); gl.uniform1f(u.CR, V.crash); gl.uniform1f(u.EN, P.en);
+  gl.uniform3fv(u.TOP, P.top); gl.uniform3fv(u.BOT, P.bot); gl.uniform3fv(u.ACC, P.acc);
+  gl.uniform4fv(u.N, NA); gl.uniform4fv(u.NI, NIA);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, waveTex); gl.uniform1i(u.WAVE, 0);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  gl.bindTexture(gl.TEXTURE_2D, fTex); gl.generateMipmap(gl.TEXTURE_2D);
+  // pass 2: film post
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.useProgram(post.p);
+  gl.uniform1i(post.u.SC, 0); gl.uniform2f(post.u.R, cv.width, cv.height); gl.uniform1f(post.u.T, T); gl.uniform1f(post.u.K, V.kick);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+/* ---------------------------------------------------------------------- UI */
+buildTimeline();
+let ready = false;
+$("start").onclick = async () => {
+  if (ready) return; ready = true;
+  $("go").textContent = "tuning strings…";
+  initAudio(); await ctx.resume();
+  await new Promise(r => setTimeout(r, 30));
+  const pitches = new Set([PEDAL, 57, 78, 81, 55, 59, 64, ...MQ.map(n => n + 12)]);
+  Object.values(CH).forEach(c => pitches.add(lowOf(c)));
+  Object.values(CH).forEach(c => { c.tops.forEach(n => { pitches.add(n); pitches.add(n + 12); }); if (c.pedal) pitches.add(c.pedal); });
+  [M1, M2, MW].forEach(m => m.forEach(([, n]) => pitches.add(n)));
+  pitches.forEach(ksBuffer);
+  await buildCab(); await buildKit();
+  $("start").classList.add("hide"); $("hud").classList.add("on"); $("ctl").classList.add("on");
+  play();
+};
+$("restart").onclick = () => { if (ctx) { V.barNo = 0; play(); } };
+let rec = null;
+$("rec").onclick = e => {
+  if (!ctx) return; const b = e.currentTarget;
+  if (rec) { rec.stop(); return; }
+  const stream = new MediaStream([...cv.captureStream(60).getVideoTracks(), ...recDest.stream.getAudioTracks()]);
+  const mime = ["video/webm;codecs=vp9,opus", "video/webm", "video/mp4"].find(m => MediaRecorder.isTypeSupported(m));
+  const chunks = []; rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 16e6, audioBitsPerSecond: 320e3 });
+  rec.ondataavailable = d => chunks.push(d.data);
+  rec.onstop = () => { const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob(chunks, { type: mime }));
+    a.download = "hakumei." + (mime.includes("mp4") ? "mp4" : "webm"); a.click(); rec = null; b.textContent = "● rec"; };
+  rec.start(); b.textContent = "■ stop"; V.barNo = 0; play();
+};
+</script>
+</body>
+</html>
