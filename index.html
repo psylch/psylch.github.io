@@ -2,15 +2,55 @@
 <html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>psylch</title>
 <style>
-html,body{margin:0;height:100%;background:#07080b;color:#efe6d8;font-family:"Hiragino Mincho ProN","Noto Serif JP",Georgia,serif}
-main{min-height:100%;display:grid;place-content:center;gap:28px;padding:8vw}
+html,body{margin:0;min-height:100%;background:#07080b;color:#efe6d8;font-family:"Hiragino Mincho ProN","Noto Serif JP","Noto Serif SC",Georgia,serif}
+main{max-width:860px;margin:0 auto;padding:10vh 8vw 12vh;display:grid;gap:56px}
 h1{margin:0;font-weight:300;letter-spacing:.3em;font-size:14px;font-family:ui-monospace,Menlo,monospace;color:#efe6d888}
+h2{margin:0 0 4px;font-weight:300;letter-spacing:.3em;font-size:11px;font-family:ui-monospace,Menlo,monospace;color:#efe6d866;text-transform:uppercase}
 a{color:inherit;text-decoration:none;display:block;border-top:1px solid #efe6d82a;padding:18px 0}
-a b{font-weight:300;font-size:clamp(32px,5vw,56px);letter-spacing:.3em}
-a span{display:block;margin-top:8px;font:10px ui-monospace,Menlo,monospace;letter-spacing:.22em;text-transform:uppercase;color:#efe6d888}
+a b{font-weight:300;font-size:clamp(20px,3vw,30px);letter-spacing:.08em}
+a.big b{font-size:clamp(32px,5vw,56px);letter-spacing:.3em}
+a span{display:block;margin-top:8px;font:10px/1.7 ui-monospace,Menlo,monospace;letter-spacing:.18em;text-transform:uppercase;color:#efe6d888}
 a:hover b{color:#fff}
+#more:empty{display:none}
 </style></head><body><main>
-<h1>PSYLCH · WORKS</h1>
-<a href="hakumei/"><b>薄明</b><span>hakumei — an étude for two guitars, in code · web audio + webgl2</span></a>
+<h1>PSYLCH · WORKS &amp; RESEARCH</h1>
+
+<section>
+<h2>Works</h2>
+<a class="big" href="hakumei/"><b>薄明</b><span>hakumei — an étude for two guitars, in code · web audio + webgl2</span></a>
 <a href="hakumei/hakumei.mp3"><span>↓ mp3 · 2:39 · 320kbps</span></a>
-</main></body></html>
+</section>
+
+<section>
+<h2>Research</h2>
+<a href="harness-source-compare/"><b>Agent Harness 源码级对比</b><span>2026-10-18 · 10 个维度：agent loop、工具执行、沙箱权限、上下文压缩、MCP、记忆、subagent…</span></a>
+<a href="bench-deepdive/"><b>Agent 评测论文精读</b><span>2026-10-14 · benchmark deep dive + 技术报告数据</span></a>
+<a href="agent-infra-acquired/"><b>那些被收购的 Agent Infra</b><span>2026-10-13 · agent infra acquisitions</span></a>
+<a href="always-on-agents/"><b>Always-on agent 的十一层机制</b><span>2026-10-11 · always-on agents, 11 layers</span></a>
+<a href="sourcing-ginga-light/"><b>银河电灯 / 第四境界 · 调研报告</b><span>2026-10-10 · sourcing research: Ginga Light (Shiroki)</span></a>
+</section>
+
+<section>
+<h2>Weekly</h2>
+<a href="sourcing/"><b>Sourcing 周报</b><span>每周开源 / 产品 sourcing · latest 2026-10-18</span></a>
+</section>
+
+<section id="more-wrap" hidden>
+<h2>New · auto-listed</h2>
+<div id="more"></div>
+</section>
+</main>
+<script>
+// 自动补列：任何开了 GitHub Pages、但上面还没写进目录的新仓库，会出现在 "New" 一栏
+(async()=>{try{
+ const known=new Set([...document.querySelectorAll('main a')].map(a=>a.getAttribute('href').split('/')[0]).concat(['psylch.github.io']));
+ const r=await fetch('https://api.github.com/users/psylch/repos?per_page=100&sort=pushed');if(!r.ok)return;
+ const repos=(await r.json()).filter(x=>x.has_pages&&!known.has(x.name));
+ if(!repos.length)return;const box=document.getElementById('more');
+ for(const x of repos){const a=document.createElement('a');a.href=x.name+'/';
+  a.innerHTML='<b></b><span></span>';a.querySelector('b').textContent=x.description||x.name;
+  a.querySelector('span').textContent=x.pushed_at.slice(0,10)+' · '+x.name;box.appendChild(a);}
+ document.getElementById('more-wrap').hidden=false;
+}catch(e){}})();
+</script>
+</body></html>
