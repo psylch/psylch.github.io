@@ -146,3 +146,10 @@ a.dl:hover,.btn:hover{background:#333!important}
  .rp-sheet .it.on{background:#fff;color:var(--ink);font-weight:600;box-shadow:var(--shadow)}
  .rp-sheet .it.on span{background:linear-gradient(transparent 62%,var(--accent) 62%)}
 }
+/* back-to-top */
+.rp-top{position:fixed;right:calc(16px + env(safe-area-inset-right));bottom:calc(18px + env(safe-area-inset-bottom));z-index:30;display:inline-flex;align-items:center;gap:6px;padding:10px 14px 10px 12px;border:1px solid #fafafa;border-radius:999px;background:rgba(255,255,255,.94);-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);box-shadow:var(--pill-shadow),0 8px 24px rgba(0,0,0,.08);font:600 13px/1 var(--sans);color:var(--ink);cursor:pointer;opacity:0;transform:translateY(12px) rotate(-2deg);pointer-events:none;transition:opacity .2s,transform .3s cubic-bezier(.3,1.6,.5,1)}
+.rp-top.show{opacity:1;transform:rotate(-2deg);pointer-events:auto}
+.rp-top:hover{transform:rotate(0) translateY(-2px) scale(1.04)}
+.rp-top svg{width:14px;height:14px}
+.rp-open .rp-top{opacity:0;pointer-events:none}
+@media print{.rp-top{display:none}}

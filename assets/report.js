@@ -64,3 +64,15 @@
  }
  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',function(){setTimeout(build,0);});else setTimeout(build,0);
 })();
+/* back-to-top pill: shows after ~1 screen of scroll */
+(function(){
+ function init(){
+  var b=document.createElement('button');b.type='button';b.className='rp-top';b.setAttribute('aria-label','回到顶部');
+  b.innerHTML='<svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 11.5V3M3.5 6.5 7 3l3.5 3.5"/></svg>顶部';
+  document.body.appendChild(b);
+  var t=false;function up(){t=false;b.classList.toggle('show',scrollY>innerHeight*.9);}
+  addEventListener('scroll',function(){if(!t){t=true;requestAnimationFrame(up);}},{passive:true});up();
+  b.addEventListener('click',function(){scrollTo({top:0,behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth'});});
+ }
+ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',init);else init();
+})();
