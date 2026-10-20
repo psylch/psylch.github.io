@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-CN" class="no-js"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>报告标题 · 副标题</title>
+<meta name="description" content="一句话摘要">
+<link rel="stylesheet" href="https://psylch.github.io/assets/report.css">
+<style>/* 页面专属的少量样式写这里，只用 var(--ink) 等变量，不要改底色和字体 */</style>
+</head>
+<body class="report"><main>
+<a class="back" href="https://psylch.github.io/">← psylch</a>
+<div class="meta">RESEARCH · 2026-10-20</div>
+<h1>报告标题</h1>
+<p class="lead">一段话结论：最重要的发现放这里，读者只看这一段也知道结论。</p>
+
+<nav class="toc"><b>目录</b><ol><li><a href="#s1">概览</a></li><li><a href="#s2">明细</a></li></ol></nav>
+
+<div class="stats"><div class="stat"><b>13</b><span>全球项目</span></div><div class="stat"><b>5</b><span>华人项目</span></div></div>
+
+<div class="tabs" data-tabs><button class="on" data-t="t-a">全球</button><button data-t="t-b">华人</button><button data-t="t-c">表格</button></div>
+
+<section id="t-a" class="panel on">
+ <div class="item"><div class="nm"><a href="https://example.com">项目名</a> <span class="tag ok">新</span></div>
+  <p><span class="lbl">做什么</span>一句话。</p><p><span class="lbl">信号</span>+1,200 stars</p></div>
+ <div class="item seen"><div class="nm">往期出现过的项目（变灰）</div><p>…</p></div>
+</section>
+<section id="t-b" class="panel">
+ <div class="grid"><div class="card"><div class="nm">卡片 A</div><p class="sub">说明</p></div><div class="card"><div class="nm">卡片 B</div><p class="sub">说明</p></div></div>
+</section>
+<section id="t-c" class="panel">
+ <table><thead><tr><th>名称</th><th class="num">数值</th><th>备注</th></tr></thead>
+ <tbody><tr><td>A</td><td class="num">1,024</td><td>宽表会自动横向滚动</td></tr></tbody></table>
+</section>
+
+<h2 id="s1">概览</h2>
+<p>正文段落。<code>inline code</code>。</p>
+<div class="callout">提示 / 结论框。<b>.callout.info / .ok / .bad</b> 换颜色。</div>
+<details><summary>可折叠的长内容</summary><p>细节放这里。</p></details>
+<h2 id="s2">明细</h2>
+<pre><code>code block</code></pre>
+<div class="foot">由 Grok Bot 生成 · 2026-10-20 · 资料来源见正文链接</div>
+</main>
+<script src="https://psylch.github.io/assets/report.js"></script>
+</body></html>
