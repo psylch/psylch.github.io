@@ -5,7 +5,7 @@
 <a class="back" href="https://psylch.github.io/">← psylch</a>
 <div class="meta">专家轨迹 · 字段设计 · 2026-10-21</div>
 <h1>剪辑软件轨迹字段设计 v1（PR / 剪映 / 达芬奇）</h1>
-<div class="tabs sticky" data-tabs><button class="on" data-t="s0">结论</button><button data-t="s1">三款软件采集面</button><button data-t="s2">扩展到建模</button><button data-t="s3">字段总表</button><button data-t="s4">动作词表</button><button data-t="s5">预览行为</button><button data-t="s6">意图与任务包</button><button data-t="s7">示例</button><button data-t="s8">优先级与风险</button></div>
+<div class="tabs sticky" data-tabs><button class="on" data-t="s0">结论</button><button data-t="s1">三款软件采集面</button><button data-t="s2">扩展到建模</button><button data-t="s3">字段总表</button><button data-t="s4">动作词表</button><button data-t="s5">预览行为</button><button data-t="s6">意图与任务包</button><button data-t="s7">示例</button><button data-t="s8">优先级与风险</button><button data-t="s9">实现方案</button></div>
 <section id="s0" class="panel on"><h2>结论</h2><ul class="lead">
 <li><strong>格式不重做</strong>：沿用 v0.2（原始事件层 + 语义步视图、L0–L4、provenance、op_native→op_canonical、Contra 列兼容）。新增 <code>editing.*</code> 领域扩展：时间线状态快照、时间线差分、剪辑动作词表、「看」行为（播放/擦洗）记录。</li>
 <li><strong>三款软件 L2 能力差距大</strong>：PR（UXP 25.6+）= 有事件 + 可读写时间线，L2 最强；达芬奇 = 只有 Studio 能脚本，且无事件回调，只能轮询；剪映 = 无插件 API，6.0 起草稿加密，新版 UI 不暴露 AX，只能靠 L3 + 草稿差分。</li>
@@ -698,6 +698,190 @@
 <li>剪映 mac 新版 AX 暴露情况；CapCut 国际版最新版本草稿是否仍明文。</li>
 <li>三款软件 AX 实机扫描（Accessibility Inspector / Inspect.exe）。</li>
 <li>合作方剪辑师实际软件版本分布（Studio 比例、剪映版本）。</li>
+</ul></section><section id="s9" class="panel"><h2>实现方案</h2><h3>结论</h3>
+<ul>
+<li><strong>adb-mcp 只执行写操作，不录制。</strong> 链路是 MCP server（Python）→ 代理（Node socket.io，localhost:3001）→ UXP 插件（PR/PS/ID），AE 和 AI 走 CEP。两个仓库里都没有事件监听代码（没有 <code>EventManager</code> 或 <code>app.bind</code>）。</li>
+<li><strong>Contra 的「事件 payload 遥测」来自另一个未公开的录制器，adb-mcp 只用于「回放落地」。</strong> 依据：<ul>
+<li>parquet 234 步中有 211 个 tool_call，其中 64 个（约 30%）的名字（<code>premiere_effect_param_change</code>、<code>premiere_clip_split</code>、<code>premiere_marker_change</code>、<code>premiere_keyframe_add</code> 等）在 adb-mcp 里不存在；</li>
+<li>同一动作，录制名的参数和 fork 工具的参数也对不上：<code>premiere_clip_split</code> 用的是 <code>insertion_time_ticks</code>，fork 的 <code>split_clip</code> 用的是 <code>tick</code>；</li>
+<li>fork 的 Premiere 提交信息写的是 "so recorded editing trajectories are fully replayable"，提交时间 2026-07-06，作者邮箱 @contra.com。
+  录制器具体怎么实现<strong>待验证</strong>；最可能是 UXP 面板订阅 EventManager，再读状态做差分，变化值以 from_value/to_value 形式写入。</li>
+</ul>
+</li>
+<li><strong>可复用：</strong> 两个仓库都是 MIT 许可（Copyright 2025 Mike Chambers），可以直接复用以下三块：<ul>
+<li><strong>状态读取：</strong> <code>getSequences()</code> 在每次命令返回时附带完整序列快照（轨道、片段、ticks），可以直接改成我们的快照器；</li>
+<li><strong>回放：</strong> 33 个 PR 工具可当回放与校验器；</li>
+<li><strong>工具名对齐：</strong> 用这套工具名做 <code>execution_paths.mcp_tool</code>，可以和 Contra 列对齐。
+  录制部分要自己写：在同一个 UXP 插件里加 EventManager 订阅和定时快照。</li>
+</ul>
+</li>
+<li><strong>其他软件：</strong> 达芬奇用 Studio 脚本轮询加差分（现成的 davinci-resolve-mcp，约 3.7k 星，MIT）；剪映/CapCut 用明文草稿差分加 L3（pyJianYingDraft 约 4.6k 星，Apache-2.0），不解密、不注入；FCP 用 FCPXML 保存点差分加 Workflow Extension（API 细节待验证）；AE 走 CEP/ExtendScript，adb-mcp 只给了一个 <code>execute_extend_script</code>。</li>
+</ul>
+<h3>adb-mcp 架构与源码</h3>
+<h3>架构</h3>
+<ul>
+<li>链路：AI ↔ MCP Server ↔ Command Proxy ↔ UXP 插件 ↔ 应用。需要代理是因为 UXP 插件只能做 socket 客户端，不能当服务端（见上游 README）。</li>
+<li>PR 用 <strong>UXP</strong>：<code>uxp/pr/manifest.json</code> 中 host 为 premierepro，minVersion 25.3.0。AE、AI 走 <strong>CEP</strong>：<code>cep/com.mikechambers.ae</code>，Host AEFT [25.0,99.9]。</li>
+<li>提交历史：<ul>
+<li>上游 214 个提交，最近两次在 2026-07-08，内容是 PR 开发者模式说明，以及绕过 WebSocket 导致的 PR 崩溃；</li>
+<li>fork 在上游 2025-10-03 版本之上多了两个提交：c408eee（2026-06-03，Photoshop 新增约 95 个工具）和 338c537（2026-07-06，PR 新增 trajectory-replay 工具：<code>split_clip</code>、<code>set_player_position</code>/<code>get_player_position</code>、<code>move_clip</code>、<code>apply_effect</code>、<code>list_effects</code>/<code>list_transitions</code>，并修复 <code>appendVideoFilter</code> 的 bug）。</li>
+</ul>
+</li>
+<li>星数（GitHub API，2026-10-21）：上游 728，fork 0。</li>
+</ul>
+<h3>PR 工具清单（fork 共 33 个，上游 26 个）</h3>
+<p>项目与文件：
+- <code>get_project_info</code>、<code>save_project</code>、<code>save_project_as</code>、<code>open_project</code>、<code>create_project</code>
+- <code>create_bin_in_active_project</code>、<code>move_project_items_to_bin</code>、<code>import_media</code></p>
+<p>序列：
+- <code>set_active_sequence</code>、<code>create_sequence_from_media</code>、<code>close_gaps_on_sequence</code>、<code>export_sequence</code>、<code>export_frame</code>、<code>get_sequence_frame_image</code></p>
+<p>片段：
+- <code>add_media_to_sequence(sequence_id, item_name, video_track_index, audio_track_index, insertion_time_ticks=0, overwrite=True)</code>
+- <code>remove_item_from_sequence(…, ripple_delete=True)</code>
+- <code>set_clip_start_end_times</code>、<code>set_clip_disabled</code>、<code>set_audio_track_mute</code>、<code>set_video_clip_properties(opacity, blend_mode)</code>、<code>add_marker_to_sequence</code>
+- fork 新增：<code>split_clip(…, tick)</code>、<code>move_clip(…, shift_ticks)</code></p>
+<p>效果与过渡：
+- <code>append_video_transition</code>、<code>add_black_and_white_effect</code>/<code>add_gaussian_blur_effect</code>/<code>add_tint_effect</code>/<code>add_motion_blur_effect</code>
+- fork 新增：<code>apply_effect(effect_match_name, params)</code>、<code>list_effects</code>、<code>list_transitions</code></p>
+<p>播放头（fork 新增）：<code>get_player_position</code>、<code>set_player_position</code></p>
+<h3>对照 Contra parquet（premiere.parquet，234 步）</h3>
+<table>
+<thead>
+<tr>
+<th>Contra tool_call</th>
+<th>次数</th>
+<th>在 adb-mcp 中</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>add_media_to_sequence</td>
+<td>83</td>
+<td>✓ 同名同参</td>
+</tr>
+<tr>
+<td>premiere_effect_param_change（含 Lumetri Temperature 等，带 from_value/to_value）</td>
+<td>41</td>
+<td>✗ 录制器专有，没有通用参数修改工具</td>
+</tr>
+<tr>
+<td>set_active_sequence / set_clip_start_end_times / apply_effect / set_video_clip_properties / remove_item_from_sequence / append_video_transition / set_clip_disabled / import_media / export_sequence</td>
+<td>16/14/11/2/2/2/1/3/1</td>
+<td>✓</td>
+</tr>
+<tr>
+<td>premiere_marker_change / _marker_move / _clip_speed / _clip_move / _clip_split / _track_add / _keyframe_add / _audio_transition_add / _project_opened</td>
+<td>7/1/5/3/1/3/2/3/1</td>
+<td>✗ 录制器专有；其中 split/move 已有 fork 工具，但参数不同</td>
+</tr>
+<tr>
+<td>hotkey / dragTo</td>
+<td>6/3</td>
+<td>L3 原语</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li>数据卡原文："the tool_call is recorded telemetry read off Premiere's own event payload"。数据卡说明 <code>mcp_tool</code> 指向 adb-mcp；没有 MCP 工具的步骤只给 <code>menu_path</code> 或快捷键。</li>
+</ul>
+<h3>可用于采集的代码入口（fork）</h3>
+<ul>
+<li><code>uxp/pr/main.js:55</code>：每次命令返回都调 <code>getSequences()</code>，附带全量序列状态。</li>
+<li><code>uxp/pr/commands/utils.js:238</code> <code>getSequences</code>，<code>:206-214</code> 读取片段 <code>getTrackItems</code> 和 <code>getStartTime().ticks</code>，<code>:329</code> <code>getTrackItems</code>：直接改成快照器。</li>
+<li><code>uxp/pr/commands/core.js:584</code> <code>getPlayerPosition</code>（可用于播放段采样）、<code>:633</code> <code>splitClip</code>、<code>:344</code> <code>setClipStartEndTimes</code>、<code>:78</code> <code>addMediaToSequence</code>、<code>:751</code> <code>commandHandlers</code> 注册表。</li>
+<li><code>uxp/pr/main.js:36,71-98</code>：socket.io 连接代理。录制事件可以复用这条通道，往外推 <code>event_packet</code>。</li>
+<li><code>adb-proxy-socket/proxy.js:40-117</code>：负责转发。</li>
+<li><code>mcp/pr-mcp.py</code> 和 <code>mcp/core.py</code>：<code>sendCommand</code>，用于回放端。</li>
+<li>我们要加的：在 <code>main.js</code> 里用 <code>ppro.EventManager.addGlobalEventListener</code> 订阅 Project/Sequence/OperationComplete/Snap 事件，触发后读 <code>getSequences()</code> 做差分，再定时轮询 <code>getPlayerPosition</code>。</li>
+</ul>
+<h3>各软件最小可行方案</h3>
+<table>
+<thead>
+<tr>
+<th>软件</th>
+<th>最小可行采集</th>
+<th>L1</th>
+<th>L2</th>
+<th>L3</th>
+<th>现成开源</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Premiere Pro</td>
+<td>改造 adb-mcp 的 UXP 插件：事件订阅、快照差分、播放头轮询，回放用其 MCP 工具</td>
+<td>弱</td>
+<td>A</td>
+<td>✓</td>
+<td>adb-mcp（MIT）</td>
+</tr>
+<tr>
+<td>DaVinci Resolve</td>
+<td>Studio 外部 Python 脚本：每 1–2 秒轮询时间线、片段和时间码并做差分；保存点额外导出时间线（OTIO/FCPXML，版本支持待验证）；Workflow Integration（JS 面板）仅 Studio，也拿不到事件</td>
+<td>弱</td>
+<td>B</td>
+<td>✓</td>
+<td>samuelgursky/davinci-resolve-mcp（3677 星，MIT；免费版 21.1 起不能用 Python）</td>
+</tr>
+<tr>
+<td>剪映 / CapCut</td>
+<td>监视草稿目录，做明文 <code>draft_content.json</code> 差分（剪映 ≤5.9 / CapCut 国际版），加 L3 截帧和输入；加密版只记保存点</td>
+<td>剪映 ≤6 有，7+ 无</td>
+<td>C</td>
+<td>✓</td>
+<td>pyJianYingDraft（4620 星，Apache-2.0）；capcut-cli（928，MIT，只检测加密）；VectCutAPI（原 CapCutAPI，2320，Apache-2.0）；capcut-mcp（96，无许可证）</td>
+</tr>
+<tr>
+<td>Final Cut Pro</td>
+<td>导出 FCPXML 做保存点差分，加 L3；Workflow Extension 能否观察时间线待验证</td>
+<td>待验证</td>
+<td>C+（待验证）</td>
+<td>✓</td>
+<td>fcp-mcp-server（127，FCPXML）；SpliceKit（178，自称「unlocked」，疑似注入，不采用）</td>
+</tr>
+<tr>
+<td>After Effects</td>
+<td>CEP 面板加 ExtendScript 轮询（项目、合成、图层、属性），加 L3</td>
+<td>待验证</td>
+<td>B（待验证）</td>
+<td>✓</td>
+<td>adb-mcp AE 只有 <code>execute_extend_script</code>；Dakkshin/after-effects-mcp（773）</td>
+</tr>
+<tr>
+<td>Avid（可选）</td>
+<td>只做 L3 加 AAF/EDL 导出</td>
+<td>待验证</td>
+<td>待验证</td>
+<td>✓</td>
+<td>无</td>
+</tr>
+</tbody>
+</table>
+<h3>注入与风险</h3>
+<ul>
+<li>剪映：<ul>
+<li>解密草稿依赖逆向 <code>videoeditor.dll</code>；pyJianYingDraft 维护者以法律风险为由拒绝合并解密 PR（#189）。</li>
+<li>进程注入或 hook Qt 有违反用户协议、被检测、更新后失效等风险，第一阶段<strong>不做</strong>。</li>
+</ul>
+</li>
+<li>FCP：SpliceKit 一类方案属于修改应用或注入，同样不采用。</li>
+<li>达芬奇：免费版 21.1 前的「Scripts 菜单内桥接」可用，但官方明确表示要关闭这类用法，不作为方案。</li>
+</ul>
+<h3>来源</h3>
+<ul>
+<li>https://github.com/mikechambers/adb-mcp ；<a href="https://github.com/JasonObeid/adb-mcp">https://github.com/JasonObeid/adb-mcp</a> （提交 338c537、c408eee）</li>
+<li>Contra 数据卡：research/contra/premiere-video-editing-trajectories.README.md（L38、L103、L111-114）</li>
+<li>https://github.com/samuelgursky/davinci-resolve-mcp ；<a href="https://www.pugetsystems.com/blog/2026/09/10/how-davinci-resolve-free-v21-1-scripting-changes-affect-puget-bench/">https://www.pugetsystems.com/blog/2026/09/10/how-davinci-resolve-free-v21-1-scripting-changes-affect-puget-bench/</a></li>
+<li>https://github.com/GuanYixuan/pyJianYingDraft （PR #189）；<a href="https://github.com/renezander030/capcut-cli">https://github.com/renezander030/capcut-cli</a> ；<a href="https://github.com/sun-guannan/VectCutAPI">https://github.com/sun-guannan/VectCutAPI</a> ；<a href="https://github.com/fancyboi999/capcut-mcp">https://github.com/fancyboi999/capcut-mcp</a></li>
+<li>https://github.com/DareDev256/fcp-mcp-server ；<a href="https://github.com/elliotttate/SpliceKit">https://github.com/elliotttate/SpliceKit</a> ；<a href="https://github.com/Dakkshin/after-effects-mcp">https://github.com/Dakkshin/after-effects-mcp</a></li>
+<li>https://github.com/AcademySoftwareFoundation/OpenTimelineIO （2032 星，Apache-2.0）</li>
+</ul>
+<h3>待验证</h3>
+<ul>
+<li>Contra 录制器的实现（UXP 事件还是 ExtendScript/CEP，或者 L3 推断后再映射）；<code>premiere_effect_param_change</code> 的 from/to 值是靠快照差分得到的，还是来自 Lumetri 面板事件。</li>
+<li>fork 的 <code>split_clip</code> 用「克隆加修剪」模拟剃刀，克隆片段的落位还标着 TODO(verify)。</li>
+<li>达芬奇各版本导出 OTIO 的支持情况、能否读取选中项。</li>
+<li>FCP Workflow Extension 能否订阅时间线和播放头变化；AE CEP 事件能力；Avid 的 API。</li>
 </ul></section>
 <div class="foot">Grok Bot 生成 · 2026-10-21 · 「待验证」= 未实机核实</div>
 </main><script src="https://psylch.github.io/assets/report.js"></script></body></html>
