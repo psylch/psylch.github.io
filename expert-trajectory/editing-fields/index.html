@@ -5,7 +5,7 @@
 <a class="back" href="https://psylch.github.io/">← psylch</a>
 <div class="meta">专家轨迹 · 字段设计 · 2026-10-21</div>
 <h1>剪辑软件轨迹字段设计 v1（PR / 剪映 / 达芬奇）</h1>
-<div class="tabs sticky" data-tabs><button class="on" data-t="s0">结论</button><button data-t="s1">三款软件采集面</button><button data-t="s2">扩展到建模</button><button data-t="s3">字段总表</button><button data-t="s4">动作词表</button><button data-t="s5">预览行为</button><button data-t="s6">意图与任务包</button><button data-t="s7">示例</button><button data-t="s8">优先级与风险</button><button data-t="s9">实现方案</button></div>
+<div class="tabs sticky" data-tabs><button class="on" data-t="s0">结论</button><button data-t="s1">三款软件采集面</button><button data-t="s2">扩展到建模</button><button data-t="s3">字段总表</button><button data-t="s4">动作词表</button><button data-t="s5">预览行为</button><button data-t="s6">意图与任务包</button><button data-t="s7">示例</button><button data-t="s8">优先级与风险</button><button data-t="s9">Contra 对照</button><button data-t="s10">实现方案</button></div>
 <section id="s0" class="panel on"><h2>结论</h2><ul class="lead">
 <li><strong>格式不重做</strong>：沿用 v0.2（原始事件层 + 语义步视图、L0–L4、provenance、op_native→op_canonical、Contra 列兼容）。新增 <code>editing.*</code> 领域扩展：时间线状态快照、时间线差分、剪辑动作词表、「看」行为（播放/擦洗）记录。</li>
 <li><strong>三款软件 L2 能力差距大</strong>：PR（UXP 25.6+）= 有事件 + 可读写时间线，L2 最强；达芬奇 = 只有 Studio 能脚本，且无事件回调，只能轮询；剪映 = 无插件 API，6.0 起草稿加密，新版 UI 不暴露 AX，只能靠 L3 + 草稿差分。</li>
@@ -698,7 +698,205 @@
 <li>剪映 mac 新版 AX；CapCut 10.x 应用自建草稿是否仍明文；剪映 9.0 Win 应用自建明文是否可复现（见 08）。</li>
 <li>三款软件 AX 实机扫描（Accessibility Inspector / Inspect.exe）。</li>
 <li>合作方剪辑师实际软件版本分布（Studio 比例、剪映版本）。</li>
-</ul></section><section id="s9" class="panel"><h2>实现方案</h2><h3>结论</h3>
+</ul></section><section id="s9" class="panel"><h2>Contra 对照</h2><p>依据：Contra Premiere/Photoshop parquet 实测 26 列 + README；我们侧 <code>03-editing-fields-v1</code> / PRD v0.5–v0.6 / 格式 v0.2。</p>
+<h3>结论</h3>
+<ol>
+<li><strong>他们交付的是「语义步一行」</strong>（AgentNet 形：截图 + thought/action/observation/reflection + tool_call）。我们<strong>兼容这一视图</strong>（<code>views/contra.jsonl</code>），但主交付是<strong>原始事件层 + 语义步</strong>双视图。</li>
+<li><strong>我们多出来的，正是他们缺的</strong>：L0 环境、L1 AX、L2 时间线/文档状态快照与差分、连续 L3 输入流、结构化撤销/分支、字段级 <code>provenance</code>、可选 <code>human_verbatim</code> L4。</li>
+<li><strong>他们对齐训练友好</strong>：多执行路径（MCP / 快捷键 / 菜单）+ Premiere 域 <code>action_type</code>。我们词表用 <code>op_native → op_canonical</code>（<code>editing.*</code>），导出时可映射到他们的 <code>tool_call</code> / <code>action_type</code>。</li>
+<li><strong>意图可信度</strong>：他们承认 thought/observation/reflection 是旁白经模型改写，无原话/音频。我们把原话与模型版拆开，并标来源。</li>
+<li><strong>粒度</strong>：他们一步约几十秒～分钟、只有关键帧；我们常开层是事件触发截帧+输入，语义步可从快照差分压缩出来。</li>
+</ol>
+<h3>字段对照（一行一步视角）</h3>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th>Contra 公开列</th>
+<th>我们</th>
+<th>关系</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>轨迹 ID</td>
+<td><code>trajectory_uuid</code> / <code>session_uuid</code> / <code>step_index</code></td>
+<td>同构；另有事件 <code>seq</code></td>
+<td><strong>兼容</strong></td>
+</tr>
+<tr>
+<td>关键帧</td>
+<td><code>image</code>（动作前一帧）</td>
+<td>L3 <code>frame_ref</code>；可导出同形</td>
+<td><strong>兼容</strong>；我们还可连续帧/视频附件</td>
+</tr>
+<tr>
+<td>自然语言动作</td>
+<td><code>action</code></td>
+<td>语义步叙述 / 导出 <code>action</code></td>
+<td><strong>兼容</strong></td>
+</tr>
+<tr>
+<td>动作分类</td>
+<td><code>action_type</code>（如 <code>premiere_clip_add</code>）</td>
+<td><code>op_canonical</code>（如 <code>editing.clip.add</code>）+ 软件原名 <code>op_native</code></td>
+<td><strong>可映射</strong>；我们跨软件统一词表</td>
+</tr>
+<tr>
+<td>结构化调用</td>
+<td><code>tool_call</code> <code>{name,arguments}</code></td>
+<td>语义步 params + 可选导出 adb-mcp 名</td>
+<td><strong>可映射</strong>；他们 telemetry→映射且可被 pipeline 改写</td>
+</tr>
+<tr>
+<td>可执行代码</td>
+<td><code>code</code>（pyautogui）</td>
+<td>可选导出；非主路径</td>
+<td><strong>可选兼容</strong></td>
+</tr>
+<tr>
+<td>多执行路径</td>
+<td><code>execution_paths</code> + <code>preferred_execution</code></td>
+<td>设计支持；导出时填 MCP/快捷键/菜单</td>
+<td><strong>兼容目标</strong></td>
+</tr>
+<tr>
+<td>坐标 / 视口</td>
+<td><code>coord_x/y</code>、<code>viewport_*</code></td>
+<td>L3 输入事件自带</td>
+<td><strong>兼容</strong>；我们还有完整键鼠流</td>
+</tr>
+<tr>
+<td>时间</td>
+<td><code>timestamp_ms</code>（相对）</td>
+<td>事件绝对/单调时钟 + 相对</td>
+<td><strong>更强</strong></td>
+</tr>
+<tr>
+<td>应用标记</td>
+<td><code>source</code>（premiere/photoshop/browser）</td>
+<td><code>source</code> / L0 app</td>
+<td><strong>兼容</strong></td>
+</tr>
+<tr>
+<td>任务描述</td>
+<td><code>instruction</code> / <code>natural_language_task</code> / <code>actual_task</code></td>
+<td>任务包三层描述</td>
+<td><strong>兼容</strong></td>
+</tr>
+<tr>
+<td>平台摘要</td>
+<td><code>platform</code>、<code>applications_used</code>、<code>step_count</code>、<code>duration_ms</code></td>
+<td>L0 + manifest</td>
+<td><strong>兼容并扩展</strong></td>
+</tr>
+<tr>
+<td>思考</td>
+<td><code>thought</code>（旁白→模型增强）</td>
+<td><code>intent.text</code> + <code>origin</code>：<code>human_verbatim</code> / <code>human_annotated</code> / <code>model_augmented</code></td>
+<td><strong>我们可审计</strong>；他们无原话</td>
+</tr>
+<tr>
+<td>观察 / 反思</td>
+<td><code>observation</code>、<code>reflection</code>（模型增强）</td>
+<td>可导出同列；状态优先用结构化快照，不靠散文</td>
+<td><strong>兼容导出</strong>；语义重心不同</td>
+</tr>
+<tr>
+<td>环境快照 L0</td>
+<td>仅 OS / 分辨率；版本偶现 observation 文</td>
+<td>软件版本、插件、语言、工程路径哈希、快捷键配置等</td>
+<td><strong>我们有、他们无</strong></td>
+</tr>
+<tr>
+<td>系统 AX L1</td>
+<td>无</td>
+<td>窗口/菜单级 AX</td>
+<td><strong>我们有、他们无</strong></td>
+</tr>
+<tr>
+<td>应用内状态 L2</td>
+<td>无完整时间线/图层树；参数挤在 tool_call</td>
+<td><code>ext.editing.timeline_snapshot</code> + <code>changes[]</code>（建模域同理）</td>
+<td><strong>我们有、他们无</strong></td>
+</tr>
+<tr>
+<td>连续输入 L3</td>
+<td>无；仅关键帧+偶发坐标</td>
+<td>截帧 + 键鼠对齐事件流</td>
+<td><strong>我们有、他们无</strong></td>
+</tr>
+<tr>
+<td>撤销 / 分支</td>
+<td>仅 reflection 文字提及失败</td>
+<td><code>history.undo/redo</code>、parent_step / 分支视图</td>
+<td><strong>我们有、他们无</strong></td>
+</tr>
+<tr>
+<td>字段来源</td>
+<td>README 口头说明；列上无标</td>
+<td>每字段 <code>provenance</code>：<code>raw</code> / <code>derived</code> / <code>model</code></td>
+<td><strong>我们有、他们无</strong></td>
+</tr>
+<tr>
+<td>「看」行为</td>
+<td>无（播放/擦洗被压进大步）</td>
+<td><code>ext.editing.view</code>（play/scrub 段）</td>
+<td><strong>我们有、他们无</strong></td>
+</tr>
+<tr>
+<td>交付形态</td>
+<td>单 parquet，一行一步</td>
+<td><code>sources/*.jsonl</code> + <code>views/steps.jsonl</code> + <code>views/contra.jsonl</code> + 工程/导出物</td>
+<td><strong>双视图 + 兼容导出</strong></td>
+</tr>
+</tbody>
+</table>
+<h3>语义差异（不只是多几列）</h3>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>Contra</th>
+<th>我们</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>主事实</td>
+<td>「这一步做了什么」（稀疏语义步）</td>
+<td>「当时文档/时间线是什么 + 发生了什么变化」</td>
+</tr>
+<tr>
+<td>动作从哪来</td>
+<td>Premiere 事件 payload → 事后映射成 tool_call</td>
+<td>优先时间线快照差分推 op（<code>derived</code>）；PR 原生事件加分</td>
+</tr>
+<tr>
+<td>失败怎么记</td>
+<td>reflection 散文</td>
+<td>结构化 undo / 分支指针</td>
+</tr>
+<tr>
+<td>复现</td>
+<td>无工程/素材包；文件名常哈希</td>
+<td>L0 + 可选工程与素材；干净机复现是样例目标</td>
+</tr>
+<tr>
+<td>软件面</td>
+<td>强绑 Adobe + adb-mcp</td>
+<td>剪辑三件套可分级；建模 P0 另线；AX 通用底座</td>
+</tr>
+</tbody>
+</table>
+<h3>导出约定（买方直接吃 Contra 形）</h3>
+<p><code>views/contra.jsonl</code> 必填对齐列：<code>trajectory_uuid</code>、<code>session_uuid</code>、<code>step_index</code>、<code>image</code>/<code>frame_ref</code>、<code>thought</code>、<code>action</code>、<code>action_type</code>、<code>observation</code>、<code>reflection</code>、<code>tool_call</code>、<code>execution_paths</code>、<code>preferred_execution</code>、<code>source</code>、坐标与视口、<code>timestamp_ms</code>、三层任务、<code>platform</code>、<code>applications_used</code>。</p>
+<p>扩展不进他们 schema 的，放并列包或同行扩展键：<code>ext.editing.*</code>、<code>ax_ref</code>、<code>ui_tree_ref</code>、<code>event_refs</code>、<code>history</code>、<code>provenance</code>、<code>intent.origin</code>。买方只要 Contra 形就只取兼容列。</p>
+<h3>数据出处</h3>
+<ul>
+<li>Contra：<code>research/contra/premiere.parquet</code>、<code>photoshop.parquet</code>；README 本地副本。</li>
+<li>公开页：<a href="https://huggingface.co/datasets/contralabs/premiere-video-editing-trajectories">Premiere</a>、<a href="https://huggingface.co/datasets/contralabs/photoshop-creative-design-trajectories">Photoshop</a>。</li>
+</ul></section><section id="s10" class="panel"><h2>实现方案</h2><h3>结论</h3>
 <ul>
 <li><strong>adb-mcp 只执行写操作，不录制。</strong> 链路是 MCP server（Python）→ 代理（Node socket.io，localhost:3001）→ UXP 插件（PR/PS/ID），AE 和 AI 走 CEP。两个仓库里都没有事件监听代码（没有 <code>EventManager</code> 或 <code>app.bind</code>）。</li>
 <li><strong>Contra 的「事件 payload 遥测」来自另一个未公开的录制器，adb-mcp 只用于「回放落地」。</strong> 依据：<ul>
