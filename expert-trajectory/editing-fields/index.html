@@ -1,0 +1,703 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>剪辑软件轨迹字段设计 v1（PR / 剪映 / 达芬奇）</title><link rel="stylesheet" href="https://psylch.github.io/assets/report.css">
+<style>td code,li code{word-break:break-all}</style></head>
+<body class="report"><main class="wide">
+<a class="back" href="https://psylch.github.io/">← psylch</a>
+<div class="meta">专家轨迹 · 字段设计 · 2026-10-21</div>
+<h1>剪辑软件轨迹字段设计 v1（PR / 剪映 / 达芬奇）</h1>
+<div class="tabs sticky" data-tabs><button class="on" data-t="s0">结论</button><button data-t="s1">三款软件采集面</button><button data-t="s2">扩展到建模</button><button data-t="s3">字段总表</button><button data-t="s4">动作词表</button><button data-t="s5">预览行为</button><button data-t="s6">意图与任务包</button><button data-t="s7">示例</button><button data-t="s8">优先级与风险</button></div>
+<section id="s0" class="panel on"><h2>结论</h2><ul class="lead">
+<li><strong>格式不重做</strong>：沿用 v0.2（原始事件层 + 语义步视图、L0–L4、provenance、op_native→op_canonical、Contra 列兼容）。新增 <code>editing.*</code> 领域扩展：时间线状态快照、时间线差分、剪辑动作词表、「看」行为（播放/擦洗）记录。</li>
+<li><strong>三款软件 L2 能力差距大</strong>：PR（UXP 25.6+）= 有事件 + 可读写时间线，L2 最强；达芬奇 = 只有 Studio 能脚本，且无事件回调，只能轮询；剪映 = 无插件 API，6.0 起草稿加密，新版 UI 不暴露 AX，只能靠 L3 + 草稿差分。</li>
+<li><strong>剪辑的核心事实是「时间线状态序列」</strong>：动作可以缺，但每个关键时刻的时间线快照必须有。统一语义步优先从「快照差分」派生（diff 推断 op，标 <code>provenance=derived</code>），PR 原生事件只作为加分。</li>
+<li><strong>预览/擦洗是剪辑独有的高价值信号</strong>（找剪点、比对、回看），按「播放段」合并记录，不逐帧落盘。</li>
+<li><strong>任务包 = 工程文件（逐次保存版本）+ 导出成片 + 素材清单（哈希，不含素材本体，按需求方授权附代理） + 轨迹 + 剪辑理由</strong>。第一阶段 P0 推荐 PR 为主采软件，达芬奇 Studio 为次，剪映走「低保真」档并单独标注。</li>
+</ul></section><section id="s1" class="panel"><h2>三款软件采集面</h2><h3>能力等级（L2）</h3>
+<table>
+<thead>
+<tr>
+<th>软件</th>
+<th>L2 等级</th>
+<th>能拿到</th>
+<th>缺口</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Premiere Pro</td>
+<td><strong>A</strong>（事件 + 状态）</td>
+<td>UXP（25.6+）EventManager：Project OPENED/CLOSED/DIRTY/ACTIVATED/PROJECT_ITEM_SELECTION_CHANGED；Sequence ACTIVATED/CLOSED/SELECTION_CHANGED；OperationComplete EFFECT_DROP_COMPLETE/EXPORT_MEDIA_COMPLETE/IMPORT_MEDIA_COMPLETE 等；SnapEvent（TRACKITEM/RAZOR_PLAYHEAD/KEYFRAME…）。可读序列、轨道、TrackItem、入出点、组件参数、标记、播放头</td>
+<td>没有「每个编辑命令」的事件（无 cut/trim 回调）；DIRTY 只说「变了」→ 需在 DIRTY 后读快照做差分。ExtendScript <code>app.bind</code> 事件可补（名称待实机核对）</td>
+</tr>
+<tr>
+<td>DaVinci Resolve</td>
+<td><strong>B</strong>（仅状态，Studio）</td>
+<td>Python/Lua 脚本：项目、Media Pool、时间线、轨道、TimelineItem（起止、源偏移、属性）、标记、当前时间码、调色节点（部分）、渲染队列；可导出时间线为交换格式</td>
+<td><strong>无事件回调</strong>，只能轮询；免费版 19.1 起无外部脚本、21.1 起 Python 脚本移到 Studio；Workflow Integrations（JS 面板）仅 Studio</td>
+</tr>
+<tr>
+<td>剪映专业版</td>
+<td><strong>C</strong>（无 L2）</td>
+<td>草稿目录 <code>draft_content.json</code>/<code>draft_info.json</code>（5.9.x 明文；CapCut 国际版测试样本明文）；导出文件</td>
+<td>无官方插件 API；6.0+ 草稿 AES 加密（社区逆向可解，版本间常变，法律灰色，<strong>不采用</strong>）；7+ UIA 控件隐藏</td>
+</tr>
+</tbody>
+</table>
+<h3>Premiere Pro</h3>
+<ul>
+<li>UXP：<code>require('premierepro')</code>，方法异步不阻塞 UI；EventManager since 25.6。</li>
+<li>ExtendScript/CEP：仍受支持；CEP 预计 2028-12 在 PR 默认禁用、2029 年底移除 → 新插件直接用 UXP，旧版本 PR（&lt;25.6）才用 CEP 兜底。</li>
+<li>工程：<code>.prproj</code>（gzip XML，可离线解析，作为 L2 缺失时的保存点差分来源）；可导出 FCP XML。</li>
+<li>采集方式：UXP 面板常驻 → 订阅事件 → 事件触发 + 定时（如 2s）读活动序列快照 → 差分。</li>
+</ul>
+<h3>DaVinci Resolve</h3>
+<ul>
+<li>脚本入口 <code>DaVinciResolveScript</code>，外部脚本需 Studio 且偏好设为 Local。</li>
+<li>轮询：建议 1–2s 读「当前页面、当前时间线、当前时间码、选中项（待验证 API 覆盖）」，5–10s 或在 L3 检测到编辑键/鼠标释放后读全量轨道快照。</li>
+<li>工程在数据库内（.drp 可导出）；时间线可导出 EDL/FCPXML/AAF/OTIO（OTIO 版本支持待验证）。</li>
+<li>采集对象选 Studio（合作方在岗剪辑师多有 Studio，待确认）。</li>
+</ul>
+<h3>剪映专业版 / CapCut 桌面</h3>
+<ul>
+<li>只做：L0 环境 + L3（截帧 + 键鼠，坐标）+ 草稿差分（仅明文版本：剪映 ≤5.9.x 或 CapCut 国际版）+ 导出物。</li>
+<li>加密版本：不解密；只记草稿文件的大小/mtime/哈希变化作为「保存点」信号，语义全部来自 L3 + 模型标注（<code>provenance=model</code>）。</li>
+<li>结论：剪映数据定为「低保真档」，单独定价/标注，不与 PR/达芬奇混为同一质量等级。</li>
+</ul>
+<h3>系统级 AX（L1）</h3>
+<table>
+<thead>
+<tr>
+<th>软件</th>
+<th>macOS</th>
+<th>Windows</th>
+<th>时间线</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>PR</td>
+<td>官方「有限支持」；菜单有层级，很多控件无可访问名称/角色</td>
+<td>同</td>
+<td>黑盒（官方注明时间线依赖鼠标）</td>
+</tr>
+<tr>
+<td>达芬奇</td>
+<td>Qt 自绘，无官方读屏支持；实机待验证</td>
+<td>社区：UIA 基本拿不到控件</td>
+<td>黑盒（待验证）</td>
+</tr>
+<tr>
+<td>剪映</td>
+<td>5.5.0 可用 AX 驱动导出对话框；新版待验证</td>
+<td>≤6.x 控件可见且有语义 Description；7+ 隐藏；11.x Qt/QML 0 个 UIA 子控件</td>
+<td>黑盒</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li>用途限于：前台窗口、菜单命令、对话框开合、可读按钮名。不靠 L1 识别剪辑动作。</li>
+</ul>
+<h3>来源</h3>
+<ul>
+<li>PR UXP EventManager：<a href="https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/eventmanager">https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/eventmanager</a></li>
+<li>PR UXP Constants：<a href="https://developer.adobe.com/premiere-pro/uxp/ppro-reference/constants/">https://developer.adobe.com/premiere-pro/uxp/ppro-reference/constants/</a></li>
+<li>PR UXP 样例（事件订阅）：<a href="https://github.com/AdobeDocs/uxp-premiere-pro-samples">https://github.com/AdobeDocs/uxp-premiere-pro-samples</a></li>
+<li>CEP→UXP 时间表：<a href="https://blog.developer.adobe.com/en/publish/2026/09/investing-in-the-future-of-creative-cloud-extensibility-uxp-comes-to-our-flagship-applications">https://blog.developer.adobe.com/en/publish/2026/09/investing-in-the-future-of-creative-cloud-extensibility-uxp-comes-to-our-flagship-applications</a></li>
+<li>ExtendScript 参考：<a href="https://ppro-scripting.docsforadobe.dev/">https://ppro-scripting.docsforadobe.dev/</a></li>
+<li>PR 无障碍：<a href="https://www.adobe.com/accessibility/compliance/adobe-premiere-pro-mac-2024-acr.html">https://www.adobe.com/accessibility/compliance/adobe-premiere-pro-mac-2024-acr.html</a> ；<a href="https://helpx.adobe.com/premiere/desktop/get-started/set-up-accessibility-features/screen-reader-screen-magnifier-and-operating-system-accessibility-support.html">https://helpx.adobe.com/premiere/desktop/get-started/set-up-accessibility-features/screen-reader-screen-magnifier-and-operating-system-accessibility-support.html</a></li>
+<li>达芬奇 Studio 功能：<a href="https://www.blackmagicdesign.com/products/davinciresolve/studio/">https://www.blackmagicdesign.com/products/davinciresolve/studio/</a></li>
+<li>达芬奇 21.1 免费版移除 Python：<a href="https://www.pugetsystems.com/blog/2026/09/10/how-davinci-resolve-free-v21-1-scripting-changes-affect-puget-bench/">https://www.pugetsystems.com/blog/2026/09/10/how-davinci-resolve-free-v21-1-scripting-changes-affect-puget-bench/</a></li>
+<li>达芬奇 19.1 UI 脚本限 Studio：<a href="https://forum.blackmagicdesign.com/viewtopic.php?f=21&amp;t=216545">https://forum.blackmagicdesign.com/viewtopic.php?f=21&amp;t=216545</a></li>
+<li>达芬奇脚本覆盖示例：<a href="https://github.com/samuelgursky/davinci-resolve-mcp">https://github.com/samuelgursky/davinci-resolve-mcp</a></li>
+<li>Qt 应用 UIA：<a href="https://reverseengineering.stackexchange.com/questions/30053">https://reverseengineering.stackexchange.com/questions/30053</a></li>
+<li>剪映加密：<a href="https://gist.github.com/renezander030/521e6c6e8590a2a6e917009d9313bc55">https://gist.github.com/renezander030/521e6c6e8590a2a6e917009d9313bc55</a> ；<a href="https://github.com/GuanYixuan/pyJianYingDraft/pull/189">https://github.com/GuanYixuan/pyJianYingDraft/pull/189</a></li>
+<li>剪映 UIA：<a href="https://github.com/GuanYixuan/pyJianYingDraft">https://github.com/GuanYixuan/pyJianYingDraft</a> ；<a href="https://pypi.org/project/jianying-tool/">https://pypi.org/project/jianying-tool/</a></li>
+</ul></section><section id="s2" class="panel"><h2>扩展到建模</h2><h3>公共核心 + 领域扩展</h3>
+<ul>
+<li>公共核心（不变）：事件公共字段、<code>action{op_native, op_canonical, params, phase, trigger, context}</code>、<code>changes[]</code>、<code>history</code>、<code>intent</code>、<code>provenance</code>、Contra 列。</li>
+<li>领域扩展挂在命名空间下：事件 <code>payload</code> 原样保留；结构化扩展放 <code>ext.editing.*</code> / <code>ext.modeling.*</code>；manifest 声明 <code>domains: ["editing"]</code> 与 <code>ext_versions: {"editing": "0.1"}</code>。</li>
+<li>词表：公共动词保持原 id（<code>file.*</code>、<code>history.*</code>、<code>select.set</code>、<code>property.set</code>、<code>view.navigate</code>、<code>script.run</code>、<code>anim.insert_keyframe</code>）；领域专有动作用二级前缀（<code>editing.clip.cut</code>、<code>modeling.geometry.extrude</code>）。现有 P0 的 <code>geometry.*</code>/<code>sketch.*</code>/<code>paint.*</code> 迁移为 <code>modeling.*</code> 别名（保留旧 id 一个版本）。</li>
+<li>建模域示例：<code>ext.modeling.scene_snapshot</code>（对象树、变换、修改器栈）沿用 Blender/UE/FreeCAD 已有 L2 快照；<code>ext.editing.timeline_snapshot</code> 与之并列，<code>changes[].target.type</code> 各域自定义但须带域前缀时可无歧义（如 <code>editing:item</code>、<code>modeling:object</code>）。</li>
+<li>跨域公共语义：时间轴（<code>anim.set_frame</code> ↔ 播放头）、关键帧、节点图（调色节点 ↔ 材质节点）共用公共动作 id，参数里用 <code>domain</code> 区分。</li>
+<li>校验：扩展 schema 独立文件 <code>schema-ext-editing-0.1.json</code>，主 schema 只校验 <code>ext</code> 为对象；未声明的域报错。</li>
+</ul></section><section id="s3" class="panel"><h2>字段总表</h2><h3>时间线状态快照 <code>ext.editing.timeline_snapshot</code>（state_change / observation 事件）</h3>
+<table>
+<thead>
+<tr>
+<th>字段</th>
+<th>含义</th>
+<th>P</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>timeline_id</code> / <code>name</code></td>
+<td>序列/时间线稳定 ID 与名称</td>
+<td>P0</td>
+</tr>
+<tr>
+<td><code>frame_rate</code>（有理数 <code>{num,den}</code>）、<code>drop_frame</code>、<code>resolution</code>、<code>start_tc</code></td>
+<td>时基</td>
+<td>P0</td>
+</tr>
+<tr>
+<td><code>duration_frames</code></td>
+<td>时长（帧）</td>
+<td>P0</td>
+</tr>
+<tr>
+<td><code>playhead_frame</code></td>
+<td>播放头</td>
+<td>P0</td>
+</tr>
+<tr>
+<td><code>tracks[]</code> <code>{track_id, kind: video/audio/subtitle/effect, index, name, muted, locked, enabled}</code></td>
+<td>轨道</td>
+<td>P0</td>
+</tr>
+<tr>
+<td><code>items[]</code> 见下</td>
+<td>片段</td>
+<td>P0</td>
+</tr>
+<tr>
+<td><code>markers[]</code> <code>{marker_id, frame, duration, name, color, note, scope: timeline/clip}</code></td>
+<td>标记</td>
+<td>P0</td>
+</tr>
+<tr>
+<td><code>in_out</code> <code>{in_frame, out_frame}</code></td>
+<td>时间线入出点</td>
+<td>P1</td>
+</tr>
+<tr>
+<td><code>selection</code> <code>{item_ids[]}</code></td>
+<td>选中项</td>
+<td>P0（PR/达芬奇）</td>
+</tr>
+<tr>
+<td><code>hash</code></td>
+<td>规范化快照哈希（用于去重和 diff 锚点）</td>
+<td>P0</td>
+</tr>
+</tbody>
+</table>
+<h3>片段 <code>items[]</code></h3>
+<table>
+<thead>
+<tr>
+<th>字段</th>
+<th>含义</th>
+<th>P</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>item_id</code></td>
+<td>稳定 ID（见下）</td>
+<td>P0</td>
+</tr>
+<tr>
+<td><code>track_id</code>、<code>record_in</code>/<code>record_out</code>（帧，时间线上）</td>
+<td>位置</td>
+<td>P0</td>
+</tr>
+<tr>
+<td><code>media_ref</code> <code>{media_id, sha256_head, path_hash, duration_frames}</code></td>
+<td>源素材引用（不存路径明文）</td>
+<td>P0</td>
+</tr>
+<tr>
+<td><code>source_in</code>/<code>source_out</code></td>
+<td>源区间</td>
+<td>P0</td>
+</tr>
+<tr>
+<td><code>speed</code> <code>{rate, reverse, retime: constant/ramp}</code></td>
+<td>速度</td>
+<td>P0</td>
+</tr>
+<tr>
+<td><code>enabled</code>、<code>link_group</code></td>
+<td>启用、音视频链接组</td>
+<td>P0</td>
+</tr>
+<tr>
+<td><code>kind</code> <code>clip/title/caption/generator/adjustment/compound/nested</code></td>
+<td>类型</td>
+<td>P0</td>
+</tr>
+<tr>
+<td><code>transitions</code> <code>{in, out}</code> <code>{type, duration, alignment}</code></td>
+<td>过渡</td>
+<td>P0</td>
+</tr>
+<tr>
+<td><code>effects[]</code> <code>{effect_id, native_name, canonical, enabled, params_digest}</code></td>
+<td>效果；参数默认只给摘要</td>
+<td>P0（名称）/P1（全参数）</td>
+</tr>
+<tr>
+<td><code>transform</code> <code>{position, scale, rotation, crop, opacity}</code></td>
+<td>运动</td>
+<td>P1</td>
+</tr>
+<tr>
+<td><code>keyframes[]</code> <code>{param_path, frame, value, interp}</code></td>
+<td>关键帧</td>
+<td>P1</td>
+</tr>
+<tr>
+<td><code>color</code> <code>{node_graph_digest, nodes[] {node_id, label, tools[]}, lut}</code></td>
+<td>调色节点（达芬奇）/Lumetri（PR）</td>
+<td>P1</td>
+</tr>
+<tr>
+<td><code>audio</code> <code>{gain_db, pan, fades}</code></td>
+<td>音频</td>
+<td>P1</td>
+</tr>
+<tr>
+<td><code>text</code> <code>{content_hash, length, style_digest}</code></td>
+<td>字幕/标题：默认只存哈希与长度；授权后存原文</td>
+<td>P0（哈希）</td>
+</tr>
+</tbody>
+</table>
+<h3>稳定 ID</h3>
+<ul>
+<li>PR：UXP 对象 guid（项目内持久）作为 <code>native_id</code>；达芬奇：<code>TimelineItem.GetUniqueId()</code>（待验证覆盖版本）；剪映草稿：segment <code>id</code>（UUID，明文版本可读）。</li>
+<li>统一 <code>item_id = uuid5(session, app, native_id)</code>；无 native_id 时，用 <code>(media_id, source_in, record_in, track)</code> 首见指纹 + 跨快照匹配（Hungarian，代价 = 源区间重叠 + 位置距离），标 <code>id_basis: native|matched</code>。</li>
+<li>切开后：左段保留原 ID，右段新 ID，并记录 <code>split_from</code>；合成/嵌套记录 <code>parent_id</code>。</li>
+</ul>
+<h3>时间线差分 <code>changes[]</code></h3>
+<ul>
+<li><code>target = {type: item/track/marker/effect/timeline, id}</code>，<code>diff_level</code> 沿用 <code>exact/summary/changed_only</code>，新增 <code>paths</code> 示例：<code>record_in</code>、<code>source_out</code>、<code>speed.rate</code>、<code>effects[2].enabled</code>。</li>
+<li>差分来源：<code>native_event</code>（PR DIRTY 等触发后读）/ <code>poll</code>（达芬奇）/ <code>project_file</code>（保存点解析 .prproj/草稿）。保存点差分只能到 <code>changed_only</code> 或 <code>summary</code>（中间步骤合并）。</li>
+<li>由 diff 推断 op：规则表（例：一个 item 消失 + 两个 item 出现且源区间连续、同 media → <code>editing.clip.cut</code>），标 <code>provenance=derived</code>、<code>confidence</code>。</li>
+</ul></section><section id="s4" class="panel"><h2>动作词表</h2><h3>命名规则</h3>
+<ul>
+<li><code>editing.&lt;对象&gt;.&lt;动作&gt;</code>；拖动/修剪中间态用 <code>phase</code>；作用在多片段时 <code>params.item_ids[]</code>。</li>
+<li>原名记法沿用 v0.2：无前缀=软件命令/API；<code>event:</code> = 软件事件；<code>diff:</code> = 由差分推断（剪映与无事件场景的主路径）；<code>key:</code> = L3 快捷键名（仅作证据，不自动映射）。</li>
+</ul>
+<h3>P0 剪辑动作（op_native 示例，带「待验证」者未实机）</h3>
+<table>
+<thead>
+<tr>
+<th>canonical</th>
+<th>params</th>
+<th>Premiere Pro</th>
+<th>DaVinci Resolve</th>
+<th>剪映</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>editing.clip.insert</code></td>
+<td>item, track, at_frame, ripple=true</td>
+<td><code>SequenceEditor.createInsertProjectItemAction</code>（UXP，待验证）</td>
+<td><code>MediaPool.AppendToTimeline</code>（仅追加）/ <code>diff:insert</code></td>
+<td><code>diff:insert</code></td>
+</tr>
+<tr>
+<td><code>editing.clip.overwrite</code></td>
+<td>同上 ripple=false</td>
+<td><code>SequenceEditor.createOverwriteItemAction</code>（待验证）</td>
+<td><code>diff:overwrite</code></td>
+<td><code>diff:overwrite</code></td>
+</tr>
+<tr>
+<td><code>editing.clip.cut</code></td>
+<td>item, at_frame</td>
+<td><code>event:SnapEvent.RAZOR_PLAYHEAD</code>（弱证据）+ <code>diff:split</code></td>
+<td><code>diff:split</code></td>
+<td><code>diff:split</code></td>
+</tr>
+<tr>
+<td><code>editing.clip.trim</code></td>
+<td>item, edge in/out, delta</td>
+<td><code>diff:trim</code></td>
+<td><code>diff:trim</code></td>
+<td><code>diff:trim</code></td>
+</tr>
+<tr>
+<td><code>editing.clip.ripple_trim</code></td>
+<td>同上，后续片段平移</td>
+<td><code>diff:ripple_trim</code></td>
+<td><code>diff:ripple_trim</code></td>
+<td><code>diff:ripple_trim</code></td>
+</tr>
+<tr>
+<td><code>editing.clip.roll</code></td>
+<td>两相邻 item，delta</td>
+<td><code>diff:roll</code></td>
+<td><code>diff:roll</code></td>
+<td><code>diff:roll</code></td>
+</tr>
+<tr>
+<td><code>editing.clip.slip</code></td>
+<td>item, delta（源区间平移）</td>
+<td><code>diff:slip</code></td>
+<td><code>diff:slip</code></td>
+<td><code>diff:slip</code></td>
+</tr>
+<tr>
+<td><code>editing.clip.slide</code></td>
+<td>item, delta（位置平移，邻居补偿）</td>
+<td><code>diff:slide</code></td>
+<td><code>diff:slide</code></td>
+<td><code>diff:slide</code></td>
+</tr>
+<tr>
+<td><code>editing.clip.move</code></td>
+<td>item, to_track, to_frame</td>
+<td><code>TrackItem.move</code>（待验证）/ <code>diff:move</code></td>
+<td><code>diff:move</code></td>
+<td><code>diff:move</code></td>
+</tr>
+<tr>
+<td><code>editing.clip.delete</code></td>
+<td>items, ripple</td>
+<td><code>diff:delete</code></td>
+<td><code>Timeline.DeleteClips</code>（待验证）/ <code>diff:delete</code></td>
+<td><code>diff:delete</code></td>
+</tr>
+<tr>
+<td><code>editing.clip.speed</code></td>
+<td>item, rate</td>
+<td><code>diff:speed</code></td>
+<td><code>diff:speed</code></td>
+<td><code>diff:speed</code></td>
+</tr>
+<tr>
+<td><code>editing.clip.enable</code></td>
+<td>item, enabled</td>
+<td><code>diff:enable</code></td>
+<td><code>TimelineItem.SetClipEnabled</code>（待验证）</td>
+<td><code>diff:enable</code></td>
+</tr>
+<tr>
+<td><code>editing.clip.link</code></td>
+<td>items, linked</td>
+<td><code>diff:link</code></td>
+<td><code>Timeline.SetClipsLinked</code>（待验证）</td>
+<td><code>unmapped</code></td>
+</tr>
+<tr>
+<td><code>editing.transition.apply</code></td>
+<td>item, edge, type, duration</td>
+<td><code>diff:transition</code></td>
+<td><code>diff:transition</code></td>
+<td><code>diff:transition</code></td>
+</tr>
+<tr>
+<td><code>editing.effect.apply</code></td>
+<td>item, effect</td>
+<td><code>event:OperationCompleteEvent.EFFECT_DROP_COMPLETE</code></td>
+<td><code>diff:effect_add</code></td>
+<td><code>diff:effect_add</code></td>
+</tr>
+<tr>
+<td><code>editing.effect.param</code></td>
+<td>item, effect, path, before, after</td>
+<td><code>diff:effect_param</code></td>
+<td><code>diff:effect_param</code></td>
+<td><code>diff:effect_param</code></td>
+</tr>
+<tr>
+<td><code>editing.color.node</code></td>
+<td>item, node op（add/connect/label）</td>
+<td><code>diff:lumetri</code>（Lumetri 视作 effect）</td>
+<td><code>diff:node_graph</code>；<code>TimelineItem.AddNode</code>? 待验证</td>
+<td><code>diff:filter</code></td>
+</tr>
+<tr>
+<td><code>editing.color.adjust</code></td>
+<td>item, tool, digest</td>
+<td><code>diff:lumetri_param</code></td>
+<td><code>diff:grade</code>（参数读取覆盖待验证）</td>
+<td><code>diff:adjust</code></td>
+</tr>
+<tr>
+<td><code>editing.audio.gain</code> / <code>.fade</code></td>
+<td>item, db / fade</td>
+<td><code>diff:audio</code></td>
+<td><code>diff:audio</code></td>
+<td><code>diff:audio</code></td>
+</tr>
+<tr>
+<td><code>editing.caption.create</code> / <code>.edit</code></td>
+<td>item, text_hash</td>
+<td><code>diff:caption</code></td>
+<td><code>diff:subtitle</code></td>
+<td><code>diff:text</code>（含自动字幕）</td>
+</tr>
+<tr>
+<td><code>editing.marker.add</code> / <code>.edit</code> / <code>.delete</code></td>
+<td>marker</td>
+<td><code>event:SequenceOperation.CREATEMARKER</code>? / <code>diff:marker</code></td>
+<td><code>Timeline.AddMarker</code> 仅脚本写；人工 → <code>diff:marker</code></td>
+<td><code>diff:marker</code></td>
+</tr>
+<tr>
+<td><code>editing.media.import</code></td>
+<td>media_ids</td>
+<td><code>event:OperationCompleteEvent.IMPORT_MEDIA_COMPLETE</code></td>
+<td><code>diff:media_pool</code></td>
+<td><code>diff:materials</code></td>
+</tr>
+<tr>
+<td><code>editing.media.select</code></td>
+<td>media_id, panel</td>
+<td><code>event:ProjectEvent.PROJECT_ITEM_SELECTION_CHANGED</code></td>
+<td>轮询（待验证）</td>
+<td>L3</td>
+</tr>
+<tr>
+<td><code>editing.timeline.switch</code></td>
+<td>timeline_id</td>
+<td><code>event:SequenceEvent.ACTIVATED</code></td>
+<td>轮询 <code>GetCurrentTimeline</code></td>
+<td>L3</td>
+</tr>
+<tr>
+<td><code>editing.render.export</code></td>
+<td>preset, codec, res, fps, range, out_hash</td>
+<td><code>event:OperationCompleteEvent.EXPORT_MEDIA_COMPLETE</code></td>
+<td>渲染队列轮询</td>
+<td>导出文件出现 + L3</td>
+</tr>
+<tr>
+<td><code>select.set</code>（公共）</td>
+<td>item_ids</td>
+<td><code>event:SequenceEvent.SELECTION_CHANGED</code></td>
+<td>轮询（待验证）</td>
+<td>L3</td>
+</tr>
+<tr>
+<td><code>history.undo</code> / <code>history.redo</code>（公共）</td>
+<td>—</td>
+<td>L3 快捷键 + 差分回退</td>
+<td>同</td>
+<td>同</td>
+</tr>
+<tr>
+<td><code>file.save</code>（公共）</td>
+<td>path_hash</td>
+<td><code>event:ProjectEvent.DIRTY</code> 清除 / 文件 mtime</td>
+<td>轮询 / L3</td>
+<td>草稿 mtime</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li>PR UXP 的编辑写接口名称需在 26.x 实机确认后再写入 vocab（当前列为待验证）；在此之前 PR 列也以 <code>diff:</code> 为主。</li>
+<li>撤销：差分出现「回到此前某快照哈希」→ 标 <code>history.undo</code> 候选，<code>branch</code> 记录被丢弃的后续快照。</li>
+</ul></section><section id="s5" class="panel"><h2>预览行为</h2><h3>为什么要记</h3>
+<ul>
+<li>剪辑师大量时间在看：找剪点（反复擦洗）、比较版本（来回播放）、检查节奏（整段播放）。这些是剪辑决策的直接前置信号。</li>
+</ul>
+<h3>记法：<code>observation</code> 事件，<code>ext.editing.view</code></h3>
+<table>
+<thead>
+<tr>
+<th>字段</th>
+<th>含义</th>
+<th>P</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>monitor</code></td>
+<td><code>source</code> / <code>program</code> / <code>timeline_scrub</code> / <code>fullscreen</code></td>
+<td>P0</td>
+</tr>
+<tr>
+<td><code>mode</code></td>
+<td><code>play</code> / <code>scrub</code> / <code>jog</code> / <code>shuttle</code> / <code>step</code> / <code>loop</code> / <code>seek</code></td>
+<td>P0</td>
+</tr>
+<tr>
+<td><code>from_frame</code> / <code>to_frame</code>、<code>obs_start_ns</code> / <code>obs_end_ns</code></td>
+<td>区间</td>
+<td>P0</td>
+</tr>
+<tr>
+<td><code>rate</code></td>
+<td>播放速率（含 JKL 倍速、倒放）</td>
+<td>P0</td>
+</tr>
+<tr>
+<td><code>target</code></td>
+<td><code>media_id</code> 或 <code>timeline_id</code></td>
+<td>P0</td>
+</tr>
+<tr>
+<td><code>visits[]</code></td>
+<td>擦洗中停留点（停留 ≥ 300ms 的帧，最多 N 个）</td>
+<td>P1</td>
+</tr>
+<tr>
+<td><code>reversals</code></td>
+<td>方向反转次数（找点强度）</td>
+<td>P1</td>
+</tr>
+<tr>
+<td><code>followed_by_ref</code></td>
+<td>紧随其后的编辑步（派生）</td>
+<td>P0（derived）</td>
+</tr>
+</tbody>
+</table>
+<h3>采样/合并</h3>
+<ul>
+<li>原始：PR 播放头位置轮询 100–200ms（UXP 读取播放头，具体 API 待验证）；达芬奇 <code>GetCurrentTimecode</code> 轮询 200ms；剪映只靠 L3 截帧 + JKL/空格键。</li>
+<li>合并：同一 monitor、同一 mode、间隔 &lt; 500ms 的采样合成一个「播放段」；擦洗段保留方向反转点和停留点。落盘只存段，原始采样默认丢弃（调试模式保留）。</li>
+<li>预期量级：一小时剪辑 ≈ 数百到上千段，可接受。</li>
+<li>语义步：播放段不单独成步，作为下一编辑步的 <code>event_refs(role=context)</code>；连续 &gt;N 秒纯观看可单独成 <code>editing.review</code> 步（P1）。</li>
+</ul>
+<h3>素材浏览与选择</h3>
+<ul>
+<li><code>editing.media.browse</code>（观察）：打开 bin/文件夹、搜索词（哈希/授权后明文）、源监视器打开素材、源入出点设置（<code>source_in/out</code> 标记）。</li>
+<li>选中—打点—放入时间线串成「选材链」，是需求方最想要的「为什么选这个镜头」的证据。</li>
+</ul></section><section id="s6" class="panel"><h2>意图与任务包</h2><h3>L4 意图（剪辑理由）</h3>
+<ul>
+<li>形态：<code>intent{origin, text, event_refs}</code>，origin 取 <code>human_verbatim</code>（边剪边口述/事后看录屏口述）、<code>human_annotated</code>（事后文字）、<code>model_augmented</code>（模型补写，必须标 model）。</li>
+<li>剪辑理由分类标签（P1，<code>intent.tags</code>）：<code>rhythm</code>（节奏/卡点）、<code>narrative</code>（叙事顺序/信息揭示）、<code>continuity</code>（动作/视线衔接）、<code>emotion</code>、<code>pacing</code>（压缩/留白）、<code>coverage</code>（选镜头/选表演）、<code>technical</code>（跳帧、穿帮、音频问题修复）、<code>client_note</code>（甲方意见）。</li>
+<li>采集方式：P0 = 会话开头任务说明 + 结束后 15–30 分钟「看录屏口述」，挑关键剪点；P1 = 实时轻口述（热键开关麦克风）。</li>
+</ul>
+<h3>任务包交付物</h3>
+<table>
+<thead>
+<tr>
+<th>内容</th>
+<th>说明</th>
+<th>P</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>brief.md</code></td>
+<td>任务/甲方要求、素材概况（时长、机位数）、交付规格</td>
+<td>P0</td>
+</tr>
+<tr>
+<td><code>project/</code></td>
+<td>工程文件逐次保存版本（.prproj / .drp / 剪映草稿明文版），带哈希</td>
+<td>P0</td>
+</tr>
+<tr>
+<td><code>exports/</code></td>
+<td>成片 + 中间版本导出</td>
+<td>P0</td>
+</tr>
+<tr>
+<td><code>media_manifest.json</code></td>
+<td>素材清单：media_id、时长、编码、哈希；素材本体默认不交付，授权后附低码率代理</td>
+<td>P0</td>
+</tr>
+<tr>
+<td><code>sources/*.jsonl</code> + <code>views/steps.jsonl</code> + <code>views/contra.jsonl</code></td>
+<td>轨迹</td>
+<td>P0</td>
+</tr>
+<tr>
+<td><code>frames/</code></td>
+<td>截帧（可打码）</td>
+<td>P0</td>
+</tr>
+<tr>
+<td><code>interchange/</code></td>
+<td>FCPXML / EDL / OTIO 导出（便于跨软件复现与评测）</td>
+<td>P1</td>
+</tr>
+<tr>
+<td><code>intent/</code></td>
+<td>口述音频 + 转写</td>
+<td>P0（最小版）</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li>质量档：A = PR/达芬奇 Studio（L2 快照 + 事件/轮询）；B = 达芬奇免费版（L3 + 保存点工程）；C = 剪映（L3 + 草稿/无草稿）。</li>
+</ul></section><section id="s7" class="panel"><h2>示例</h2><p>同一动作：在 V1 上第 3 个片段 00:00:12:10 处切开（25fps，帧 310）。</p>
+<h3>Premiere Pro 原始事件</h3>
+<pre style="overflow-x:auto;white-space:pre-wrap;word-break:break-all"><code class="language-json">{&quot;source&quot;:&quot;ppro.l2&quot;,&quot;app&quot;:&quot;ppro&quot;,&quot;seq&quot;:1201,&quot;kind&quot;:&quot;action&quot;,&quot;t_mono_ns&quot;:81234000000,
+ &quot;action&quot;:{&quot;op_native&quot;:&quot;event:SnapEvent.RAZOR_PLAYHEAD&quot;,&quot;op_canonical&quot;:&quot;unmapped&quot;,&quot;params&quot;:{},&quot;phase&quot;:null,&quot;trigger&quot;:&quot;unknown&quot;,&quot;context&quot;:{&quot;timeline_id&quot;:&quot;tl-7f2&quot;}},
+ &quot;payload&quot;:{&quot;event&quot;:&quot;RAZOR_PLAYHEAD&quot;,&quot;sequence_guid&quot;:&quot;d3900a77-…&quot;}}
+{&quot;source&quot;:&quot;ppro.l2&quot;,&quot;app&quot;:&quot;ppro&quot;,&quot;seq&quot;:1202,&quot;kind&quot;:&quot;state_change&quot;,&quot;obs_start_ns&quot;:81240000000,&quot;obs_end_ns&quot;:81262000000,
+ &quot;changes&quot;:[{&quot;target&quot;:{&quot;type&quot;:&quot;item&quot;,&quot;id&quot;:&quot;it-0c1&quot;},&quot;diff&quot;:{&quot;record_out&quot;:[420,310]},&quot;diff_level&quot;:&quot;exact&quot;},
+            {&quot;target&quot;:{&quot;type&quot;:&quot;item&quot;,&quot;id&quot;:&quot;it-9aa&quot;,&quot;split_from&quot;:&quot;it-0c1&quot;},&quot;diff&quot;:{&quot;created&quot;:{&quot;record_in&quot;:310,&quot;record_out&quot;:420,&quot;source_in&quot;:610}},&quot;diff_level&quot;:&quot;exact&quot;}],
+ &quot;ext&quot;:{&quot;editing&quot;:{&quot;trigger&quot;:&quot;ProjectEvent.DIRTY&quot;,&quot;snapshot_hash&quot;:&quot;sha256:…&quot;}}}
+</code></pre>
+<h3>DaVinci Resolve 原始事件（轮询）</h3>
+<pre style="overflow-x:auto;white-space:pre-wrap;word-break:break-all"><code class="language-json">{&quot;source&quot;:&quot;resolve.l2&quot;,&quot;app&quot;:&quot;resolve&quot;,&quot;seq&quot;:388,&quot;kind&quot;:&quot;state_change&quot;,&quot;obs_start_ns&quot;:90100000000,&quot;obs_end_ns&quot;:90180000000,
+ &quot;changes&quot;:[{&quot;target&quot;:{&quot;type&quot;:&quot;item&quot;,&quot;id&quot;:&quot;it-0c1&quot;},&quot;diff&quot;:{&quot;record_out&quot;:[420,310]},&quot;diff_level&quot;:&quot;exact&quot;},
+            {&quot;target&quot;:{&quot;type&quot;:&quot;item&quot;,&quot;id&quot;:&quot;it-9aa&quot;},&quot;diff&quot;:{&quot;created&quot;:{&quot;record_in&quot;:310,&quot;record_out&quot;:420,&quot;source_in&quot;:610}},&quot;diff_level&quot;:&quot;exact&quot;}],
+ &quot;payload&quot;:{&quot;poll&quot;:&quot;GetItemListInTrack(video,1)&quot;,&quot;interval_ms&quot;:1000}}
+{&quot;source&quot;:&quot;input.l3&quot;,&quot;seq&quot;:5521,&quot;kind&quot;:&quot;action&quot;,&quot;action&quot;:{&quot;op_native&quot;:&quot;key:ctrl+b&quot;,&quot;op_canonical&quot;:&quot;unmapped&quot;,&quot;trigger&quot;:&quot;keyboard&quot;}}
+</code></pre>
+<h3>剪映原始事件（L3 + 明文草稿差分）</h3>
+<pre style="overflow-x:auto;white-space:pre-wrap;word-break:break-all"><code class="language-json">{&quot;source&quot;:&quot;input.l3&quot;,&quot;seq&quot;:7710,&quot;kind&quot;:&quot;action&quot;,&quot;action&quot;:{&quot;op_native&quot;:&quot;key:ctrl+b&quot;,&quot;op_canonical&quot;:&quot;unmapped&quot;,&quot;trigger&quot;:&quot;keyboard&quot;},&quot;frame_ref&quot;:{&quot;frame_id&quot;:&quot;f-7710&quot;,&quot;relation&quot;:&quot;before&quot;}}
+{&quot;source&quot;:&quot;jianying.draft&quot;,&quot;app&quot;:&quot;jianying&quot;,&quot;seq&quot;:64,&quot;kind&quot;:&quot;state_change&quot;,&quot;status&quot;:&quot;ok&quot;,
+ &quot;changes&quot;:[{&quot;target&quot;:{&quot;type&quot;:&quot;item&quot;,&quot;id&quot;:&quot;seg-3b…&quot;},&quot;diff&quot;:{&quot;target_timerange.duration&quot;:[4400000,2400000]},&quot;diff_level&quot;:&quot;exact&quot;},
+            {&quot;target&quot;:{&quot;type&quot;:&quot;item&quot;,&quot;id&quot;:&quot;seg-c9…&quot;},&quot;diff&quot;:{&quot;created&quot;:{&quot;target_timerange.start&quot;:12400000}},&quot;diff_level&quot;:&quot;exact&quot;}],
+ &quot;payload&quot;:{&quot;draft_mtime&quot;:&quot;…&quot;,&quot;app_version&quot;:&quot;5.9.0&quot;,&quot;unit&quot;:&quot;us&quot;}}
+</code></pre>
+<h3>统一语义步（三者相同，差别在 provenance 与 confidence）</h3>
+<pre style="overflow-x:auto;white-space:pre-wrap;word-break:break-all"><code class="language-json">{&quot;step_index&quot;:42,&quot;action_type&quot;:&quot;editing.clip.cut&quot;,&quot;op_canonical&quot;:&quot;editing.clip.cut&quot;,&quot;op_native&quot;:&quot;diff:split&quot;,
+ &quot;tool_call&quot;:{&quot;name&quot;:&quot;editing.clip.cut&quot;,&quot;arguments&quot;:{&quot;item_id&quot;:&quot;it-0c1&quot;,&quot;at_frame&quot;:310,&quot;track&quot;:&quot;V1&quot;}},
+ &quot;execution_paths&quot;:{&quot;keyboard_shortcut&quot;:{&quot;macos&quot;:&quot;cmd+k&quot;,&quot;windows&quot;:&quot;ctrl+k&quot;},&quot;menu_path&quot;:null,&quot;mcp_tool&quot;:null,&quot;python_api&quot;:null},
+ &quot;event_refs&quot;:[{&quot;ref&quot;:&quot;ppro.l2:1201&quot;,&quot;role&quot;:&quot;action&quot;,&quot;attribution&quot;:&quot;window&quot;,&quot;basis&quot;:&quot;RAZOR_PLAYHEAD 事件&quot;},
+               {&quot;ref&quot;:&quot;ppro.l2:1202&quot;,&quot;role&quot;:&quot;effect&quot;,&quot;attribution&quot;:&quot;direct&quot;,&quot;basis&quot;:&quot;差分：一段变两段、源区间连续&quot;},
+               {&quot;ref&quot;:&quot;view.l2:880&quot;,&quot;role&quot;:&quot;context&quot;,&quot;attribution&quot;:&quot;window&quot;,&quot;basis&quot;:&quot;切前 6.2s 在 290–330 帧来回擦洗 5 次&quot;}],
+ &quot;confidence&quot;:0.97,&quot;intent&quot;:{&quot;origin&quot;:&quot;human_verbatim&quot;,&quot;text&quot;:&quot;动作做完再切，留两帧让手落下&quot;,&quot;tags&quot;:[&quot;continuity&quot;,&quot;rhythm&quot;]},
+ &quot;provenance&quot;:{&quot;op_canonical&quot;:&quot;derived&quot;,&quot;params&quot;:&quot;derived&quot;,&quot;thought&quot;:&quot;raw&quot;}}
+</code></pre>
+<ul>
+<li>快捷键按软件默认：PR 剃刀于播放头 <code>Cmd/Ctrl+K</code>、达芬奇 <code>Cmd/Ctrl+B</code>、剪映 <code>Cmd/Ctrl+B</code>（以专家实际键位配置为准，L0 采快捷键配置）。</li>
+</ul></section><section id="s8" class="panel"><h2>优先级与风险</h2><h3>优先级</h3>
+<table>
+<thead>
+<tr>
+<th>档</th>
+<th>内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>P0</td>
+<td>时间线快照（轨道/片段/源区间/速度/过渡/效果名/标记/选择/播放头）、稳定 ID、diff→op 推断、P0 词表、播放段、素材选择链、导出事件、工程版本、成片、素材清单（哈希）、L3 截帧+输入、事后口述最小版</td>
+</tr>
+<tr>
+<td>P1</td>
+<td>效果全参数、关键帧、运动、调色节点图、音频参数、字幕原文（授权后）、擦洗停留点、实时口述、交换格式导出、<code>editing.review</code> 步</td>
+</tr>
+<tr>
+<td>后续</td>
+<td>Fusion/AE 动态链接内部、多人协作、代理/转码流程、AI 功能（自动字幕、智能剪辑）调用记录细化、剪映加密版本语义</td>
+</tr>
+</tbody>
+</table>
+<h3>隐私</h3>
+<ul>
+<li>素材内容默认不出机：只存哈希、时长、编码；截帧本地打码（人脸/屏幕文字）可选；字幕/标题文字默认哈希。</li>
+<li>路径、用户名、客户名做 <code>path_hash</code>；工程文件交付前由合作方确认可交付范围（素材权属在合作方/其客户）。</li>
+<li>口述可能提及客户 → 转写后人工过一遍脱敏。</li>
+</ul>
+<h3>性能</h3>
+<ul>
+<li>PR：UXP 异步，快照读取放在事件触发后节流（≥500ms 合并一次）；大工程（&gt;2000 片段）改为只读受影响轨道。</li>
+<li>达芬奇：轮询频率分层（播放头 200ms、轨道快照 1–2s），检测到播放中时暂停全量快照。</li>
+<li>截帧：编辑步前后各 1 帧 + 每 2s 低频；预览播放中不截（只记段）。</li>
+</ul>
+<h3>待验证</h3>
+<ul>
+<li>PR UXP 编辑写接口与播放头读取 API 名称（26.x）；ExtendScript <code>app.bind</code> 事件名。</li>
+<li>达芬奇：选中项读取、<code>GetUniqueId</code> 覆盖、调色参数可读程度、OTIO 导出支持版本。</li>
+<li>剪映 mac 新版 AX 暴露情况；CapCut 国际版最新版本草稿是否仍明文。</li>
+<li>三款软件 AX 实机扫描（Accessibility Inspector / Inspect.exe）。</li>
+<li>合作方剪辑师实际软件版本分布（Studio 比例、剪映版本）。</li>
+</ul></section>
+<div class="foot">Grok Bot 生成 · 2026-10-21 · 「待验证」= 未实机核实</div>
+</main><script src="https://psylch.github.io/assets/report.js"></script></body></html>
