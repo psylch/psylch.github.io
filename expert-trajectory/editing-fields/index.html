@@ -695,7 +695,7 @@
 <ul>
 <li>PR UXP 编辑写接口与播放头读取 API 名称（26.x）；ExtendScript <code>app.bind</code> 事件名。</li>
 <li>达芬奇：选中项读取、<code>GetUniqueId</code> 覆盖、调色参数可读程度、OTIO 导出支持版本。</li>
-<li>剪映 mac 新版 AX 暴露情况；CapCut 国际版最新版本草稿是否仍明文。</li>
+<li>剪映 mac 新版 AX；CapCut 10.x 应用自建草稿是否仍明文；剪映 9.0 Win 应用自建明文是否可复现（见 08）。</li>
 <li>三款软件 AX 实机扫描（Accessibility Inspector / Inspect.exe）。</li>
 <li>合作方剪辑师实际软件版本分布（Studio 比例、剪映版本）。</li>
 </ul></section><section id="s9" class="panel"><h2>实现方案</h2><h3>结论</h3>
@@ -825,11 +825,11 @@
 </tr>
 <tr>
 <td>剪映 / CapCut</td>
-<td>监视草稿目录，做明文 <code>draft_content.json</code> 差分（剪映 ≤5.9 / CapCut 国际版），加 L3 截帧和输入；加密版只记保存点</td>
+<td>明文草稿轮询差分 + L3；详见 <a href="./08-jianying-capcut-capture.md">08-jianying-capcut-capture.md</a>。首选 CapCut 国际版或钉死剪映 5.9；加密会话降为 L3-only</td>
 <td>剪映 ≤6 有，7+ 无</td>
 <td>C</td>
 <td>✓</td>
-<td>pyJianYingDraft（4620 星，Apache-2.0）；capcut-cli（928，MIT，只检测加密）；VectCutAPI（原 CapCutAPI，2320，Apache-2.0）；capcut-mcp（96，无许可证）</td>
+<td>pyJianYingDraft（4620，Apache-2.0）；capcut-cli（928，MIT，含 <code>diff</code>）；VectCutAPI（2320，Apache-2.0）；pyCapCut（715）</td>
 </tr>
 <tr>
 <td>Final Cut Pro</td>
@@ -882,6 +882,354 @@
 <li>fork 的 <code>split_clip</code> 用「克隆加修剪」模拟剃刀，克隆片段的落位还标着 TODO(verify)。</li>
 <li>达芬奇各版本导出 OTIO 的支持情况、能否读取选中项。</li>
 <li>FCP Workflow Extension 能否订阅时间线和播放头变化；AE CEP 事件能力；Avid 的 API。</li>
+</ul>
+<h3>剪映 / CapCut 深挖</h3>
+<blockquote>
+<p>对照 adb-mcp 挖法：只读开源与公开 fixture，不解密、不注入、不联系人。源码克隆在 <code>research/oss/</code>。</p>
+</blockquote>
+<h3>结论（≤5）</h3>
+<ol>
+<li><strong>三款开源都是「生成/改写草稿」工具，不是录制器。</strong> 没有进程内事件订阅；唯一现成差分是 capcut-cli 的只读 <code>capcut diff A B</code>（按 segment/material UUID 比 added/removed/changed）。采集必须自写：监视草稿目录 mtime → 读明文 JSON → 差分 → 推断 <code>diff:*</code> op。</li>
+<li><strong>加密只发生在剪映（<code>app_source=lv</code>），CapCut 国际版（<code>cc</code>）到 9.x 仍是明文。</strong> 剪映 5.9 是最后广泛使用的明文线；6.0+ 起 <code>draft_content.json</code> 常为 AES 二进制。例外（reported，单机）：剪映 9.0.0 Windows <strong>应用自己创建</strong>的草稿是明文 <code>draft_content.json</code>（无 <code>draft_info.json</code>）；工具写入再打开时，<code>draft_info.json</code> 可保持明文，legacy 镜像被加密。11.4 macOS 读应用草稿受加密限制，写明文 <code>draft_info.json</code> 可被应用打开并就地升级为密文。</li>
+<li><strong>可解析字段（明文时）覆盖时间线主语义：</strong> tracks（video/audio/text/sticker/effect/filter）、segments（id、material_id、target/source_timerange µs、speed、volume、clip transform、common_keyframes、extra_material_refs）、materials（videos/audios/texts/stickers/effects/transitions/masks/animations…）、canvas/fps/duration、platform 版本标记。时间单位一律微秒；打开后时长会被量化到帧网格（CapCut 8.5 @30fps 已测）。</li>
+<li><strong>对象 ID 稳定：</strong> segment / track / material 都是 UUID；同一草稿内跨自动保存保持不变（capcut-cli <code>diff</code>/<code>concat</code> 以此为前提）。切开/新建产生新 UUID；无 native 事件时用 UUID 做 <code>native_id</code>，映射 <code>item_id=uuid5(session,app,native_id)</code>。</li>
+<li><strong>法律边界一致：检测加密、不解密。</strong> pyJianYingDraft 拒合并解密 PR #189，改提供 <code>fallback_loader</code> 钩子且不内置实现；capcut-cli <code>detectEncryption</code> 只报告；VectCutAPI/pyCapCut 也只吃明文。第一阶段不跟 duo-video 等解密实现，不做 Qt hook / 进程注入。</li>
+</ol>
+<h3>开源对照</h3>
+<table>
+<thead>
+<tr>
+<th>仓库</th>
+<th>星 / 许可</th>
+<th>角色</th>
+<th>监听/差分</th>
+<th>加密立场</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GuanYixuan/pyJianYingDraft</td>
+<td>4620 / Apache-2.0</td>
+<td>Python 生成+模板编辑；Windows UIA 导出（≤6.x）</td>
+<td>无</td>
+<td>明文默认；<code>fallback_loader</code>；拒 #189</td>
+</tr>
+<tr>
+<td>GuanYixuan/pyCapCut</td>
+<td>715 / 无 SPDX（同作者）</td>
+<td>CapCut 对口；只明文</td>
+<td>无</td>
+<td>README：加密不支持</td>
+</tr>
+<tr>
+<td>renezander030/capcut-cli</td>
+<td>928 / MIT</td>
+<td>CLI 读写 <code>draft_content</code>/<code>draft_info</code>；schema 文档最全；<code>diff</code>/<code>diagnose</code>/<code>fixture</code></td>
+<td><strong>有 <code>diff</code>（静态对比）</strong>；无目录 watch</td>
+<td>检测不解密（决策文档）</td>
+</tr>
+<tr>
+<td>sun-guannan/VectCutAPI（原 CapCutAPI）</td>
+<td>2320 / Apache-2.0</td>
+<td>HTTP/MCP <strong>生成</strong>草稿；内嵌旧版 pyJianYingDraft；<code>draft_profiles</code> 区分 CapCut/剪映10</td>
+<td>无录制；<code>desktop_companion</code> 是热重载（写侧）</td>
+<td>生成明文；不读密文</td>
+</tr>
+<tr>
+<td>fancyboi999/capcut-mcp</td>
+<td>96 / 已归档、无许可</td>
+<td>VectCut 类 MCP 包装</td>
+<td>无</td>
+<td>同左</td>
+</tr>
+<tr>
+<td>duoec/duo-video</td>
+<td>160 / MIT</td>
+<td>社区提及的解密参考</td>
+<td>—</td>
+<td><strong>不采用</strong></td>
+</tr>
+</tbody>
+</table>
+<p>克隆路径：<code>research/oss/{pyJianYingDraft,pyCapCut,capcut-cli,VectCutAPI}/</code>（2026-10-21 shallow）。</p>
+<h3>版本与文件名事实（带来源）</h3>
+<h3>草稿主文件</h3>
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>作用</th>
+<th>谁当权威</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>draft_content.json</code></td>
+<td>时间线正文（Windows CapCut / 部分剪映）</td>
+<td>视版本；capcut-cli 自动探测</td>
+</tr>
+<tr>
+<td><code>draft_info.json</code></td>
+<td>时间线正文（mac CapCut、多数新剪映）；9.0 工具写场景的 primary</td>
+<td>同上</td>
+</tr>
+<tr>
+<td><code>draft_meta_info.json</code></td>
+<td>列表元数据、<code>draft_materials</code> 导入登记</td>
+<td>注册/relink；9.1+ 空则「文件不可访问」</td>
+</tr>
+<tr>
+<td><code>template-2.tmp</code></td>
+<td>旧镜像；8.7+ 有时抢权威</td>
+<td>需 <code>sync-timelines</code></td>
+</tr>
+<tr>
+<td><code>Timelines/&lt;id&gt;/draft_*.json</code></td>
+<td>8.7+/9.x 嵌套权威文档</td>
+<td>CapCut 9.2+ nested 优先</td>
+</tr>
+<tr>
+<td><code>.bak</code></td>
+<td>上一次保存</td>
+<td>旋转一份</td>
+</tr>
+</tbody>
+</table>
+<p>路径（默认，可在应用「全局设置」改）：</p>
+<ul>
+<li>剪映 Win：<code>%LOCALAPPDATA%\JianyingPro\User Data\Projects\com.lveditor.draft\&lt;id&gt;\</code></li>
+<li>剪映 mac：<code>~/Movies/JianyingPro/User Data/Projects/com.lveditor.draft/&lt;id&gt;/</code></li>
+<li>CapCut Win：<code>%LOCALAPPDATA%\CapCut\User Data\Projects\com.lveditor.draft\&lt;id&gt;\</code></li>
+<li>CapCut mac：<code>~/Movies/CapCut/User Data/Projects/com.lveditor.draft/&lt;id&gt;/</code></li>
+</ul>
+<p>判定明文/加密（capcut-cli <code>src/decrypt.ts</code>）：读文件头，以 <code>{</code> 开头且 <code>JSON.parse</code> 成功 → 明文；不以 <code>{</code> 开头 → 报「疑似剪映 6.0+ AES」；以 <code>{</code> 开头但 parse 失败 → 报损坏而非加密。</p>
+<h3>版本矩阵（摘要）</h3>
+<table>
+<thead>
+<tr>
+<th>产品/版本</th>
+<th>草稿可读性</th>
+<th>AX/UIA</th>
+<th>证据</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>剪映 5.9.x</td>
+<td>明文 <code>draft_content.json</code></td>
+<td>Win：控件可见，Description 语义名（<code>HomePageDraftTitle:</code>、<code>MainWindowTitleBarExportBtn</code>、<code>ExportPath</code>…）；导出自动化可用</td>
+<td>pyJianYingDraft README；controller 源码</td>
+</tr>
+<tr>
+<td>剪映 6.x</td>
+<td>加密时代开始；6.8 UIA 导出仍测通</td>
+<td>≤6 控件可见；导出 ✅</td>
+<td>README「6 及以下」</td>
+</tr>
+<tr>
+<td>剪映 7+</td>
+<td>加密常见</td>
+<td><strong>控件隐藏</strong>；自动导出 ❌</td>
+<td>README；jianying-tool 结论写入 03-editing-ax-quick</td>
+</tr>
+<tr>
+<td>剪映 9.0.0 Win</td>
+<td><strong>应用自建：明文 draft_content（reported）</strong>；工具写：draft_info 明文 + content 镜像加密（fixture）</td>
+<td>7+ 逻辑上仍隐藏</td>
+<td>capcut-cli fixture <code>jianying-9-0-0-windows/</code> + version-support.md</td>
+</tr>
+<tr>
+<td>剪映 10.8 / 11.4</td>
+<td>读应用草稿常需 fallback；11.4 写 <code>draft_info</code> 可打开后被加密升级；误写 <code>draft_content</code> →「草稿内容已损坏」</td>
+<td>11.x Win：Qt/QML，0 UIA 子控件（既有速查）</td>
+<td>pyJianYingDraft #198；encryption.md；03-editing-ax-quick</td>
+</tr>
+<tr>
+<td>CapCut 国际 6.x–9.x</td>
+<td><strong>明文</strong>（fixture / 社区扫描）</td>
+<td>未系统扫</td>
+<td>version-support；COMPATIBILITY 旁系文档</td>
+</tr>
+<tr>
+<td>CapCut 10.x</td>
+<td>读侧预期仍 JSON；工具写入 reportedly「内容已损坏」</td>
+<td>未扫</td>
+<td>version-support write-guard</td>
+</tr>
+</tbody>
+</table>
+<p><code>platform.app_source</code>：<code>cc</code>=CapCut，<code>lv</code>=剪映。枚举/资源 ID 分区域，跨端草稿资源可能解析失败。</p>
+<h3>自动保存（对轮询至关重要）</h3>
+<ul>
+<li>剪映无 Ctrl+S；社区与教程称<strong>每步/约 15s 自动写盘</strong>（非官方固定间隔，<strong>待实机测 mtime 间隔</strong>）。</li>
+<li>CapCut 同样在保存时重写 JSON 并旋转 <code>.bak</code>。</li>
+<li><strong>编辑中可读磁盘上的最新明文</strong>（与 PR「必须关工程再改」的工具写入场景不同）：采集是只读轮询，不写回。</li>
+</ul>
+<h3>明文草稿能解析什么 → <code>ext.editing.*</code> 映射</h3>
+<p>时间单位：草稿 µs ↔ 我们帧（需 L0 记 <code>fps</code>；<code>frame = round(us * fps / 1e6)</code>，注意打开后量化）。</p>
+<table>
+<thead>
+<tr>
+<th>草稿路径</th>
+<th>我们的字段</th>
+<th>备注</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>tracks[].id</code> / <code>.type</code> / <code>.name</code></td>
+<td><code>ext.editing.tracks[]</code></td>
+<td>type: video/audio/text/sticker/effect/filter…</td>
+</tr>
+<tr>
+<td><code>tracks[].segments[].id</code></td>
+<td><code>native_id</code> → <code>item_id</code></td>
+<td>UUID，跨保存稳定</td>
+</tr>
+<tr>
+<td><code>segments[].material_id</code></td>
+<td><code>media_ref</code> / 文本/贴纸查找键</td>
+<td>经 <code>materials.*</code> 反查</td>
+</tr>
+<tr>
+<td><code>target_timerange.{start,duration}</code></td>
+<td><code>record_in</code> / <code>record_out</code></td>
+<td>µs→帧</td>
+</tr>
+<tr>
+<td><code>source_timerange.{start,duration}</code></td>
+<td><code>source_in</code> / <code>source_out</code></td>
+<td>修剪/slip</td>
+</tr>
+<tr>
+<td><code>speed</code></td>
+<td><code>speed.rate</code></td>
+<td>与 source/target 时长有不变量</td>
+</tr>
+<tr>
+<td><code>volume</code> / fades（materials 或 segment）</td>
+<td><code>audio.gain_db</code> / <code>.fades</code></td>
+<td>P1</td>
+</tr>
+<tr>
+<td><code>clip.{transform,scale,rotation,alpha,flip}</code></td>
+<td><code>transform</code></td>
+<td>P1</td>
+</tr>
+<tr>
+<td><code>common_keyframes[]</code></td>
+<td><code>keyframes[]</code></td>
+<td>property_type 如 KFTypePositionX；time_offset 相对片段头</td>
+</tr>
+<tr>
+<td><code>extra_material_refs</code> → transitions/masks/animations/effects</td>
+<td><code>transitions</code> / <code>effects[]</code></td>
+<td>名称进 P0，全参数 P1</td>
+</tr>
+<tr>
+<td><code>materials.videos[].path</code> + meta</td>
+<td><code>media_ref.{path_hash,sha256_head,duration}</code></td>
+<td><strong>不存明文路径</strong></td>
+</tr>
+<tr>
+<td><code>materials.texts[].content</code></td>
+<td><code>text.{content_hash,length}</code></td>
+<td>默认哈希；授权后原文</td>
+</tr>
+<tr>
+<td><code>canvas_config</code> / <code>fps</code> / <code>duration</code></td>
+<td>时间线元数据</td>
+<td>L0/快照头</td>
+</tr>
+<tr>
+<td><code>platform.app_version</code> / <code>app_source</code></td>
+<td>L0 环境</td>
+<td>加密判定输入</td>
+</tr>
+<tr>
+<td><code>draft_meta_info.draft_materials</code></td>
+<td>导入清单</td>
+<td>与时间线 materials 互补</td>
+</tr>
+<tr>
+<td>（无）播放头/选中/监视器</td>
+<td>—</td>
+<td><strong>草稿没有</strong> → 只靠 L3</td>
+</tr>
+</tbody>
+</table>
+<p>capcut-cli <code>diff</code> 已覆盖的变化面（可直接借逻辑）：segment added/removed；字段 start/duration/material_id/content/speed/volume；material added/removed/in-place content change（如改字幕）。<strong>我们还需补：</strong> track 增删重排、keyframe 列表、extra_material_refs（转场/特效）、clip transform、嵌套 Timelines 权威文件选择。</p>
+<h3>最小可行采集（不解密、不注入）</h3>
+<h3>推荐档位（质量 C，单独标注）</h3>
+<p><strong>首选合作环境：CapCut 国际版桌面（明文稳定）或钉死的剪映 5.9.x（禁自动更新）。</strong> 剪映 9.0 Win「应用自建明文」作次选试验，须先实机确认。</p>
+<p>流水线：</p>
+<ol>
+<li><strong>L0</strong>：记录 <code>app</code>（jianying|capcut）、<code>app_version</code>、<code>app_source</code>、OS、草稿根路径、fps、快捷键配置导出（若有）。</li>
+<li><strong>草稿监视（L2 替代 = project_file 轮询）</strong>  </li>
+<li><code>watchdog</code>/<code>ReadDirectoryChanges</code>/<code>FSEvents</code> 盯 <code>&lt;draft_id&gt;/</code> 下 canonical 文件（按 capcut-cli 选择规则：存在则优先 nested <code>Timelines/&lt;main&gt;/…</code>，否则 <code>draft_info.json</code> / <code>draft_content.json</code>）。  </li>
+<li>仅处理 <code>detectEncryption</code> 判定为明文者；密文 → 记 <code>draft_encrypted=true</code>，<strong>本会话降为 L3-only</strong>，保存点只存密文哈希与 mtime，不解析。  </li>
+<li>去抖 300–500ms；读全量 JSON；算 <code>snapshot_hash</code>；与上一快照做 UUID 对齐差分 → <code>changes[]</code>，<code>provenance=project_file</code>，<code>diff_level</code> 可达 <code>exact</code>（字段级）或保存稀疏时 <code>summary</code>。  </li>
+<li>推断 <code>op_native=diff:…</code> → <code>op_canonical=editing.*</code>（复用 03 词表）；<code>confidence</code> 低于 PR 事件路径。</li>
+<li><strong>L3</strong>：截帧（编辑步前后 + 2s 低频）+ 键鼠坐标/快捷键；预览段靠空格/JKL/鼠标擦洗启发式合并（无播放头 API）。</li>
+<li><strong>L1 AX</strong>：仅 ≤6.x Win 记菜单/导出对话框等；7+ / 11.x 记「不可用」即可，不依赖。</li>
+<li><strong>任务包</strong>：逐次复制明文草稿目录（或至少 canonical JSON + meta）进 <code>project/</code>；成片；<code>media_manifest</code>（哈希）；轨迹 jsonl；截帧；事后口述。密文会话的 <code>project/</code> 只交加密 blob 哈希 + 导出成片，质量标 C−。</li>
+</ol>
+<h3>做不到什么（写清）</h3>
+<ul>
+<li>无插件 API → <strong>无</strong> Contra 式 <code>tool_call</code> 遥测、无播放头精确采样、无选中项、无撤销栈事件。</li>
+<li>加密草稿 → <strong>不</strong>解析时间线（本阶段）；中间剪辑步骤若未落盘明文则丢失，只靠 L3。</li>
+<li>自动保存间隔未官方保证 → 快速连点可能合并进一次 diff（多个逻辑 op 糊成一次 <code>summary</code>）。</li>
+<li>打开后 µs 量化 → 同一逻辑剪点帧号可能 ±1；对齐时用区间重叠而非精确相等。</li>
+<li>7+ AX 缺失 → 导出按钮/对话框名不可靠；导出完成靠输出文件出现 + L3。</li>
+<li>不回放进剪映（与 adb-mcp 回放 PR 不同）；VectCut/pyJianYingDraft 可作<strong>合成回放/校验</strong>（写新草稿），不能还原专家操作过程。</li>
+</ul>
+<h3>与 adb-mcp / Contra 对照</h3>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>Premiere + Contra</th>
+<th>剪映/CapCut（本方案）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>语义来源</td>
+<td>未公开录制器事件 + 状态快照</td>
+<td>明文草稿差分</td>
+</tr>
+<tr>
+<td>执行/回放</td>
+<td>adb-mcp UXP 工具</td>
+<td>无官方执行面；开源只生成草稿</td>
+</tr>
+<tr>
+<td>步粒度</td>
+<td>~74s/步（Contra 公开集会）</td>
+<td>取决于自动保存；预期更碎或更糊</td>
+</tr>
+<tr>
+<td>质量档</td>
+<td>A</td>
+<td>C（明文）/ C−（仅 L3）</td>
+</tr>
+</tbody>
+</table>
+<h3>待验证</h3>
+<ol>
+<li>实机：CapCut 最新国际版（含 10.x）应用自建草稿是否仍全文明文；嵌套 Timelines 权威文件在编辑中的更新顺序。  </li>
+<li>实机：剪映 5.9 / 9.0 Win / 11.x 各自「应用自建」草稿的加密与文件名；自动保存 mtime 间隔分布。  </li>
+<li>实机：segment UUID 在切开、撤销、复制轨道后的稳定性与 <code>split_from</code> 可推断性。  </li>
+<li>mac 剪映新版 AX；Win 11.x 再扫一次 UIA 子控件数。  </li>
+<li>合作方剪辑师实际版本占比（CapCut vs 剪映、能否钉 5.9 / 改用国际版）。</li>
+</ol>
+<h3>来源</h3>
+<ul>
+<li><code>research/oss/pyJianYingDraft</code>（v0.3.1，commit 1e22847）；PR #189；README 功能表  </li>
+<li><code>research/oss/capcut-cli</code>（commit e52f47e）；<code>docs/jianying-encryption.md</code>；<code>docs/version-support.md</code>；<code>docs/draft-schema/*</code>；<code>src/decrypt.ts</code>；<code>src/index.ts</code> <code>cmdDiff</code>；fixtures <code>jianying-9-0-0-windows</code>、<code>capcut-8.7-windows*</code>  </li>
+<li><code>research/oss/VectCutAPI</code>；<code>research/oss/pyCapCut</code>  </li>
+<li>既有：<code>03-editing-fields-v1.md</code>、<code>03-editing-ax-quick.md</code>、<code>07-adb-mcp-and-editing-impl.md</code>  </li>
+<li>社区自动保存描述（非官方）：bilibili/教程文约 15s；以实机 mtime 为准  </li>
 </ul></section>
-<div class="foot">Grok Bot 生成 · 2026-10-21 · 「待验证」= 未实机核实</div>
+<div class="foot">Grok Bot 生成 · 2026-10-21 · 「待验证」= 未实机核实 · 08 剪映/CapCut</div>
 </main><script src="https://psylch.github.io/assets/report.js"></script></body></html>
