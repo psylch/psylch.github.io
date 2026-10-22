@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="zh-CN" class="no-js"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Premiere 开源项目分析 · 能不能拿到每步前后状态</title>
+<meta name="description" content="Premiere Pro 相关开源项目对“操作前后状态采集”的可复用程度">
+<link rel="stylesheet" href="https://psylch.github.io/assets/report.css">
+</head>
+<body class="report"><main class="wide">
+<a class="back" href="https://psylch.github.io/">← psylch</a>
+<div class="meta">RESEARCH · 2026-10-22</div>
+<h1>Premiere 开源项目分析：谁能帮我们拿到每一步前后的状态</h1>
+<p class="lead">看了 15 个项目，没有一个是现成的“录操作前后状态”的工具，它们几乎都是让 AI 去<b>操控</b> Premiere 的 MCP，而不是<b>记录</b>人的操作。但拼起来够用：Adobe 官方 UXP 样例已经演示了“工程有改动 / 选中变化 / 轨道变化”这些事件的订阅，以及读片段、效果参数、关键帧、标记；leancoderkavy/premiere-pro-mcp 已经做了一个事件日志，还有大量读状态的代码可以抄。建议以官方样例为底子写一个很小的 UXP 采集面板：事件一来就把整份时间线读出来存快照，前后一比就是 L2，同时定时把 .prproj 存一份做对照。</p>
+
+<div class="stats"><div class="stat"><b>15</b><span>看过的项目</span></div><div class="stat"><b>2</b><span>有事件订阅代码</span></div><div class="stat"><b>0</b><span>现成录制前后状态</span></div></div>
+
+<h2 id="s1">先说清三条路</h2>
+<p>Premiere 有三套接口。<b>UXP</b> 是新插件接口（25.6 起正式），有 <code>EventManager</code> 可以订阅事件，能读轨道、片段、效果参数、关键帧、标记，是我们的主路。<b>CEP + ExtendScript</b> 是老接口，Adobe 已宣布要逐步淘汰，但事件更细（片段加入/移除、序列结构变化），老版本也能用，适合兜底。<b>直接解析 .prproj</b>：它就是 gzip 压缩的 XML，可以不进软件读，但格式没公开、只能靠反推，适合当对照而不是主数据。</p>
+
+<div class="tabs" data-tabs><button class="on" data-t="t-a">底座（最有用）</button><button data-t="t-b">MCP 类</button><button data-t="t-c">老接口 / 文件解析</button><button data-t="t-d">对比表</button></div>
+
+<section id="t-a" class="panel on">
+ <div class="item"><div class="nm"><a href="https://github.com/AdobeDocs/uxp-premiere-pro-samples">AdobeDocs/uxp-premiere-pro-samples</a> <span class="tag ok">首选底座</span></div>
+  <p><span class="lbl">是什么</span>Adobe 官方 UXP 样例，68 星，2026-10-22 仍有提交，Apache-2.0。</p>
+  <p><span class="lbl">能拿到</span><code>premiere-api</code> 面板里有现成代码：订阅 <code>ProjectEvent.DIRTY / OPENED / ACTIVATED / PROJECT_ITEM_SELECTION_CHANGED</code>、<code>SequenceEvent.ACTIVATED / SELECTION_CHANGED / CLOSED</code>、视频/字幕轨的 <code>TRACK / INFO / LOCK</code> 事件；读效果链（<code>getComponentChain</code>）、参数和关键帧（<code>keyframe.ts</code>）、标记（<code>markers.ts</code>）；写入走 <code>executeTransaction</code>，可撤销。</p>
+  <p><span class="lbl">缺口</span>只是分功能的演示，没有“事件后全量读一遍再对比”的逻辑；事件不带改了什么，要自己比。</p></div>
+ <div class="item"><div class="nm"><a href="https://github.com/leancoderkavy/premiere-pro-mcp">leancoderkavy/premiere-pro-mcp</a> <span class="tag ok">抄代码</span></div>
+  <p><span class="lbl">是什么</span>Premiere MCP，423 星，2026-10-22 仍在提交，MIT。CEP 和 UXP 两套桥都有。</p>
+  <p><span class="lbl">能拿到</span>唯一一个把事件做成产品功能的：<code>uxp-plugin/events.cjs</code> 做了一个有上限的事件日志（默认 512 条），订阅工程/序列/轨道事件，外加吸附（<code>SnapEvent</code>）和 <code>OperationCompleteEvent</code>（片段拉到头、效果拖入）；另有带类型的效果参数、关键帧、标记、时间线结构读取。</p>
+  <p><span class="lbl">缺口</span>它的事件日志故意<b>丢掉原始事件内容</b>，也不在事件时存状态；它自己的文档也写明不保证“通用或带关键帧的效果参数值能读回来”。代码量大（436 个工具），适合按需抄读状态的函数，不适合整套拿来改。</p></div>
+ <div class="item"><div class="nm"><a href="https://github.com/mikechambers/adb-mcp">mikechambers/adb-mcp</a></div>
+  <p><span class="lbl">是什么</span>Adobe 员工个人项目，729 星，最后提交 2026-07-08，MIT。一个 Python MCP + 一个 UXP 插件，通过本地 socket 代理通信，同时支持 PS / PR / AE / ID。</p>
+  <p><span class="lbl">能拿到</span>PR 部分约 30 个工具：读工程信息、加媒体、改片段起止、加几种固定效果和转场、加标记、导出帧。读效果参数只有零星几处。</p>
+  <p><span class="lbl">缺口</span>没有任何事件订阅，没有关键帧读取。优点是结构最简单，“插件 ↔ 本地进程”这根管子可以直接借用。之前计划“基于 adb-mcp 改”，看完源码后改为只借它的通信骨架。</p></div>
+</section>
+
+<section id="t-b" class="panel">
+ <div class="item"><div class="nm"><a href="https://github.com/hetpatel-11/Adobe_Premiere_Pro_MCP">hetpatel-11/Adobe_Premiere_Pro_MCP</a></div>
+  <p>742 星，2026-10-13，MIT。283 个工具，主力是 CEP 桥，UXP 标为实验。源码里没有订阅 Premiere 事件。对我们价值是 ExtendScript 读写时间线的大量样板。</p></div>
+ <div class="item"><div class="nm"><a href="https://github.com/skrfilms/premiere-mcp">skrfilms/premiere-mcp</a></div>
+  <p>0 星，2026-10-21，MIT，上面那个的分叉。卖点是“每次写入都回读确认，确认不了就报失败”，回读方式包括读状态、指纹和渲染帧。这个“回读校验”思路对我们做回放验证有参考价值，但没有事件订阅。</p></div>
+ <div class="item"><div class="nm"><a href="https://github.com/ayushozha/AdobePremiereProMCP">ayushozha/AdobePremiereProMCP</a></div>
+  <p>126 星，2026-10-05，MIT。Go + Rust + Python + TS，走 CEP 桥，重点是“给脚本和素材自动粗剪”，改完回读时间线。没有事件订阅，架构太重。</p></div>
+ <div class="item"><div class="nm"><a href="https://github.com/quadlzzz/premiere-mcp">quadlzzz/premiere-mcp</a></div>
+  <p>1 星，2026-09-04，MIT。改之前先复制序列，并给 .prproj 存快照（<code>ppro_snapshot_create</code>），改完渲染节目监视器的帧来自检。另有 <code>docs/api-traps.md</code> 列了会损坏工程的 API 坑，写插件前值得读。</p></div>
+ <div class="item"><div class="nm"><a href="https://github.com/CaYatur/PremiereProMCP">CaYatur/PremiereProMCP</a></div>
+  <p>5 星，2026-10-15，MIT。UXP 优先，CEP 只用于可编辑字幕。可作 UXP 写法参考，没有事件采集。</p></div>
+</section>
+
+<section id="t-c" class="panel">
+ <div class="item"><div class="nm"><a href="https://github.com/Adobe-CEP/Samples/tree/master/PProPanel">Adobe-CEP/Samples · PProPanel</a> <span class="tag">兜底</span></div>
+  <p>官方 CEP 样例，1088 星，MIT。<code>jsx/PPRO/Premiere.jsx</code> 绑定了 <code>onActiveSequenceStructureChanged</code>、<code>onActiveSequenceTrackItemAdded / Removed</code>、<code>onActiveSequenceSelectionChanged</code>、<code>onProjectChanged</code> 等事件，比 UXP 的“工程有改动”更细，能直接区分加入和删除片段。缺点是 CEP 正在被淘汰。</p></div>
+ <div class="item"><div class="nm"><a href="https://github.com/docsforadobe/Types-for-Adobe">docsforadobe/Types-for-Adobe</a></div>
+  <p>647 星，2026-05-18。ExtendScript 的 TypeScript 类型定义，写 CEP 兜底时用来查 API，本身不采集任何东西。</p></div>
+ <div class="item"><div class="nm"><a href="https://github.com/qmasingarbe/pymiere">qmasingarbe/pymiere</a></div>
+  <p>474 星，最后提交 2025-03-05，GPL-3.0，作者已声明不再维护。用 Python 通过 CEP 扩展调 ExtendScript，可读轨道、片段、效果参数，没有事件。GPL 协议也不适合我们改来用。</p></div>
+ <div class="item"><div class="nm">.prproj 解析：<a href="https://github.com/sergeiventurinov/PRPROJ-READER">PRPROJ-READER</a> · <a href="https://github.com/splidje/otio-premiereproject">otio-premiereproject</a> · <a href="https://github.com/supercuts/prproj-rs">prproj-rs</a></div>
+  <p>分别是 27 星（2022）、14 星（2021）、4 星（2023），都已停更。都证实 .prproj 是 gzip 包着的 XML，对象之间靠 ObjectID 引用，能拿到序列、片段、入出点、帧率，效果参数基本没解析。可以当“工程文件快照”的对照，但要自己补解析。</p></div>
+ <div class="item"><div class="nm"><a href="https://github.com/OpenTimelineIO/otio-fcp-adapter">OpenTimelineIO/otio-fcp-adapter</a></div>
+  <p>11 星，2026-04-08，Apache-2.0。读写 FCP7 XML，Premiere 能导出这种格式，所以能把时间线转成 OTIO。但导出要人点或脚本触发，效果参数会丢很多，只适合做最终时间线的通用格式，不适合逐步采集。</p></div>
+</section>
+
+<section id="t-d" class="panel">
+<table><thead><tr><th>项目</th><th>接口</th><th class="num">星</th><th>最近提交</th><th>轨道/片段</th><th>效果参数/关键帧</th><th>标记</th><th>订阅事件</th><th>写入/回放</th><th>可复用</th></tr></thead><tbody>
+<tr><td>uxp-premiere-pro-samples</td><td>UXP</td><td class="num">68</td><td>2026-10-22</td><td>有</td><td>有 / 有</td><td>有</td><td>有</td><td>有（事务）</td><td>高，作底座</td></tr>
+<tr><td>leancoderkavy/premiere-pro-mcp</td><td>UXP+CEP</td><td class="num">423</td><td>2026-10-22</td><td>有</td><td>有 / 有（不保证回读）</td><td>有</td><td>有（不存内容）</td><td>有</td><td>高，抄函数</td></tr>
+<tr><td>adb-mcp</td><td>UXP</td><td class="num">729</td><td>2026-07-08</td><td>有</td><td>少量 / 无</td><td>可写</td><td>无</td><td>部分</td><td>中，借通信</td></tr>
+<tr><td>hetpatel-11 MCP</td><td>CEP</td><td class="num">742</td><td>2026-10-13</td><td>有</td><td>有</td><td>有</td><td>无</td><td>有</td><td>中</td></tr>
+<tr><td>skrfilms/premiere-mcp</td><td>CEP</td><td class="num">0</td><td>2026-10-21</td><td>有</td><td>有</td><td>有</td><td>无</td><td>有＋回读校验</td><td>中，借校验思路</td></tr>
+<tr><td>ayushozha MCP</td><td>CEP</td><td class="num">126</td><td>2026-10-05</td><td>有</td><td>有</td><td>有</td><td>无</td><td>有</td><td>低</td></tr>
+<tr><td>quadlzzz/premiere-mcp</td><td>CEP/UXP</td><td class="num">1</td><td>2026-09-04</td><td>有</td><td>—</td><td>有</td><td>无</td><td>有＋.prproj 快照</td><td>中，读坑清单</td></tr>
+<tr><td>PProPanel</td><td>CEP</td><td class="num">1088</td><td>2026-03-24</td><td>有</td><td>有</td><td>有</td><td>有，更细</td><td>有</td><td>中，兜底</td></tr>
+<tr><td>pymiere</td><td>CEP</td><td class="num">474</td><td>2025-03-05</td><td>有</td><td>参数有</td><td>有</td><td>无</td><td>有</td><td>低（GPL、停更）</td></tr>
+<tr><td>.prproj 解析三件</td><td>文件</td><td class="num">≤27</td><td>≤2023</td><td>有</td><td>基本无</td><td>—</td><td>不适用</td><td>无</td><td>低，作对照</td></tr>
+<tr><td>otio-fcp-adapter</td><td>XML 导出</td><td class="num">11</td><td>2026-04-08</td><td>有</td><td>少</td><td>有</td><td>不适用</td><td>可生成 XML</td><td>低</td></tr>
+</tbody></table>
+<p class="sub">星数和最近提交为 2026-10-22 查询的 GitHub 数据。“有/无”来自读源码，未在真机 Premiere 上实测。</p>
+</section>
+
+<h2 id="s2">推荐：基于谁改，要补什么</h2>
+<p>以官方 <code>uxp-premiere-pro-samples</code> 的 premiere-api 面板为底子，写一个只做采集的小插件：订阅工程改动、选中变化和轨道事件，每来一个事件就把当前序列的轨道、片段、效果参数、关键帧、标记全量读一份存下来，前后两份一比就是这一步的 L2。读状态的函数参考 leancoderkavy 的 UXP 代码，往外传数据借 adb-mcp 的“插件 ↔ 本地进程”管子，回放时借 skrfilms 的回读校验思路。另外每隔一段时间存一份 .prproj，用来核对插件有没有漏读。</p>
+<div class="callout info">要补的三件事：①“工程有改动”事件是不是每步都会来、会不会一步来好几次，要真机实测；② 事件不说改了什么，操作名要靠前后对比加截帧推断；③ 需要 Premiere 25.6 以上的版本和 CC 订阅，还要确认 Charles 的 Mac 上装了没有。</div>
+
+<div class="foot">由 Grok Bot 生成 · 2026-10-22 · 资料来源见正文链接，源码均已 clone 阅读</div>
+</main>
+<script src="https://psylch.github.io/assets/report.js"></script>
+</body></html>
