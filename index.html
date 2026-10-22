@@ -23,6 +23,8 @@ a:hover b{color:#fff}
 
 <section>
 <h2>Research</h2>
+<a href="sourcing-user-simulation/"><b>AI 用户模拟赛道 · 公司 Sourcing</b><span>2026-10-20 · 用户模拟 / 合成用户赛道，35 家公司与项目</span></a>
+<a href="dsh-interview-prep/"><b>DeepSeek Harness 面试准备</b><span>2026-10-19 · dsh 源码、社区路线图、论文精读与团队关注点</span></a>
 <a href="harness-source-compare/"><b>Agent Harness 源码级对比</b><span>2026-10-18 · 10 个维度：agent loop、工具执行、沙箱权限、上下文压缩、MCP、记忆、subagent…</span></a>
 <a href="bench-deepdive/"><b>Agent 评测论文精读</b><span>2026-10-14 · benchmark deep dive + 技术报告数据</span></a>
 <a href="agent-infra-acquired/"><b>那些被收购的 Agent Infra</b><span>2026-10-13 · agent infra acquisitions</span></a>
@@ -32,7 +34,7 @@ a:hover b{color:#fff}
 
 <section>
 <h2>Weekly</h2>
-<a href="sourcing/"><b>Sourcing 周报</b><span>每周开源 / 产品 sourcing · latest 2026-10-18</span></a>
+<a href="rising-projects/"><b>Sourcing 周报</b><span>每周开源 / 产品 sourcing · 本周 2026-10-19 – 10-25 进行中</span></a>
 </section>
 
 <section id="more-wrap" hidden>
@@ -43,7 +45,7 @@ a:hover b{color:#fff}
 <script>
 // 自动补列：任何开了 GitHub Pages、但上面还没写进目录的新仓库，会出现在 "New" 一栏
 (async()=>{try{
- const known=new Set([...document.querySelectorAll('main a')].map(a=>a.getAttribute('href').split('/')[0]).concat(['psylch.github.io']));
+ const known=new Set([...document.querySelectorAll('main a')].map(a=>a.getAttribute('href').split('/')[0]).concat(['psylch.github.io','sourcing']));
  const r=await fetch('https://api.github.com/users/psylch/repos?per_page=100&sort=pushed');if(!r.ok)return;
  const repos=(await r.json()).filter(x=>x.has_pages&&!known.has(x.name));
  if(!repos.length)return;const box=document.getElementById('more');
