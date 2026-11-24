@@ -1,0 +1,626 @@
+{
+ "id": "ui-tars-2",
+ "title": "UI-TARS-2",
+ "full": "UI-TARS-2 Technical Report: Advancing GUI Agent with Multi-Turn Reinforcement Learning",
+ "arxiv": "2509.02544",
+ "pdf": "papers/2509.02544.pdf",
+ "meta": "ByteDance Seed · 2025-09 · 30 页（正文 23 页，其余为参考文献和贡献者名单，无附录）",
+ "question": "CUA 的完整后训练配方：数据飞轮、SFT、多轮 RL 各吃什么数据？",
+ "tldr": [
+  "**数据飞轮 = 按质量分流**：最新的 RL 模型自己跑轨迹（rejection sampling，即采样很多条、只留通过校验的），校验通过的进 SFT 数据，没通过的进 continual pre-training（CT，在基座上继续用大量杂数据做预训练）。SFT 和 RL 比 CT 更频繁地重训，每轮按 CT → SFT → RL 顺序重新训一遍。",
+  "**人类数据分两条线**：给 CT 的是「边做边出声思考」的 in-situ 标注，装在标注员自己电脑上，语音转文字后再用 LLM 润色，和操作按时间对齐；给 SFT 的是交互式标注，模型每步提候选动作，人选择接受或改写，保证数据是 on-policy（即贴合当前模型自己会走到的状态）。",
+  "**RL 吃三类任务，三种 reward**：游戏用 JavaScript 脚本读运行时变量算二值 reward；信息检索类用 LLM judge 对照参考答案；开放式网页操作没有标准答案，用模型自己当 outcome reward model（ORM，看轨迹和最后 5 张截图打成功分）。",
+  "**长程稳定性靠 PPO 的一组补丁**：reward 主要看最终结果，加格式奖励和长度惩罚；decoupled GAE、length-adaptive GAE、value pretraining、clip higher；rollout 用异步和流式训练，不等最慢的那条。作者的消融里 PPO 稳定优于 GRPO，value pretraining 带来更高 reward。",
+  "**环境是 GUI + SDK 混合**：同一个容器里共享文件系统，GUI 动作之外还能调终端和 MCP 工具。VM 集群几千台实例。只用 GUI 时 BrowseComp-en 7.0，开 SDK 后 29.6。",
+  "**局限散在正文里**：没有单独的 Limitations 一节。作者承认 ORM 的假阳性偏高、部分游戏撞到基座推理上限、Tetris 和 Sokoban 偏弱、Terminal Bench 只跑了 80 题里的 75 题。数据规模、RL 题量等关键数字没有给。"
+ ],
+ "forUs": [
+  "飞轮的分流规则可以直接借：通过 verifier 的轨迹进 SFT，没通过的进 CT。我们采集的剪映、UE、Maya 人类轨迹天然是 CT 级的「宽而杂」数据，而 verifier 判过的模型自产轨迹才是 SFT 级数据，两者的用途不要混。",
+  "think-aloud 采集的价值在于推理链真实。论文明确说事后补推理「几乎不可能还原当时的想法」。对 UE 这类复杂软件，建议让专家边操作边口述意图，再做 ASR 和对齐。这要求录制端把语音和操作事件打在同一条时间线上。",
+  "交互式标注（模型提案、人纠偏）比先录后改更适合新软件冷启动：人只在模型走偏时介入，标注成本集中在模型的弱点上。前提是有一个能跑 UE/Maya 的云端沙箱，且标注环境和训练环境是同一个。",
+  "RL 任务的 verifier 分三档可以直接套到 3D 任务上：能读引擎状态的（对象数量、材质参数、关卡变量）用脚本，对应游戏里的 JS 变量读取；有参考结果的用 LLM judge；渲染质量这类开放题只能用 ORM，而且要先像论文那样用人工标注轨迹测它的 F1。",
+  "论文没回答的问题要自己补：UE 这类重型 GUI 能并行多少个实例、一次 rollout 多贵；ORM 假阳性高时 reward hacking 的真实代价；训练数据量。读它是为了学配方的结构，不是为了抄数字。"
+ ],
+ "readFirst": [
+  {
+   "label": "§2.3 Data Flywheel",
+   "why": "模型产出轨迹后按质量分流到 SFT 或 CT，全文骨架",
+   "note": "n08"
+  },
+  {
+   "label": "§2.4.1 think-aloud 标注",
+   "why": "为什么不事后补推理，以及专家与新手两类标注员",
+   "note": "n12"
+  },
+  {
+   "label": "§2.4.2 交互式标注",
+   "why": "人在模型 rollout 里接受或改写，保证 on-policy",
+   "note": "n19"
+  },
+  {
+   "label": "§2.5.2 Reward Design",
+   "why": "三类任务三种 reward 来源，ORM 的输入",
+   "note": "n28"
+  },
+  {
+   "label": "§2.5.4 RL 算法",
+   "why": "reward shaping、value pretraining 等稳定性技巧",
+   "note": "n30"
+  },
+  {
+   "label": "§3.3 VLM-as-Verifier",
+   "why": "没发现 reward hacking，但 ORM 假阳性偏高",
+   "note": "n41"
+  },
+  {
+   "label": "§2.2 沙箱",
+   "why": "GUI 与 SDK 混合动作、共享文件系统、规模",
+   "note": "n05"
+  }
+ ],
+ "notes": [
+  {
+   "id": "n01",
+   "page": 3,
+   "cat": "data",
+   "from": "Unlike text or code corpora, large-scale trajectories",
+   "to": "extremely costly to collect",
+   "note": "作者对数据问题的诊断：GUI 轨迹要同时带推理、动作、环境状态和反馈，这比文本和代码语料贵得多。飞轮要解决的就是这个成本。"
+  },
+  {
+   "id": "n02",
+   "page": 3,
+   "cat": "verifier",
+   "from": "rewards are often sparse or delayed, optimization can be unstable",
+   "to": "remains challenging",
+   "note": "多轮 RL 的三个老问题：reward 稀疏或延迟、优化不稳、长序列里很难判断哪一步该记功（credit assignment）。后面的算法补丁都是冲着这三点来的。"
+  },
+  {
+   "id": "n03",
+   "page": 3,
+   "cat": "verifier",
+   "from": "asynchronous rollouts with stateful environments to preserve context",
+   "to": "adaptive advantage estimation, and value pretraining",
+   "note": "引言先给出 RL 稳定性方案的清单：异步 rollout（rollout 指让当前模型在环境里实际跑一遍任务）、流式更新、带 reward shaping 的增强版 PPO、自适应优势估计、value 预训练。每一项在 §2.5 和 §3.3 展开。"
+  },
+  {
+   "id": "n04",
+   "page": 5,
+   "cat": "task",
+   "from": "Pre-defined SDK Functions: supplementary operations that extend beyond GUI",
+   "to": "MCP tool invocations",
+   "note": "动作空间分两类：GUI 动作（点击、输入、滚动，游戏也复用这套）和预定义 SDK 函数（终端命令、MCP 工具调用）。模型每步输出的是思考加一个动作，两类混用。"
+  },
+  {
+   "id": "n05",
+   "page": 5,
+   "cat": "task",
+   "key": true,
+   "from": "A core innovation is the shared file system",
+   "to": "within the same containerized instance",
+   "note": "**GUI 和 SDK 共享同一个文件系统**：例如在浏览器里下载文件，马上能在同一实例的 shell 里处理。同一套沙箱还用于标注、评测和推理，所以训练环境和使用环境一致。"
+  },
+  {
+   "id": "n06",
+   "page": 5,
+   "cat": "task",
+   "from": "distributed virtual machine (VM) platform that runs mainstream desktop operating systems",
+   "to": "Android mobile OS",
+   "note": "GUI 环境是云虚拟机，覆盖 Windows、Ubuntu 和 Android，用 PyAutoGUI 和 ADB 驱动。统一 SDK 管 VM 分配、初始化、交互、取观察和评测，标注、benchmark、在线 RL 共用。"
+  },
+  {
+   "id": "n07",
+   "page": 6,
+   "cat": "task",
+   "from": "A lease-based lifecycle mechanism automatically releases resources",
+   "to": "overdue sessions are reclaimed to prevent waste",
+   "note": "租约式生命周期：任务结束或失败自动释放，超时的会话被回收。每个会话用 session ID 绑定任务和环境，多轮交互时状态不会串。大规模 RL 里坏掉的环境不回收就会拖垮整个集群。"
+  },
+  {
+   "id": "n08",
+   "page": 7,
+   "cat": "data",
+   "key": true,
+   "from": "the latest model generates new agent trajectories, which are filtered and redistributed",
+   "to": "recycled into earlier stages (e.g., CT)",
+   "note": "**飞轮的核心规则：最新模型生成轨迹，过滤后按质量分流。** 高质量的往后推到 SFT，低质量的回收到前面的 CT。逻辑是越靠后的阶段对数据质量要求越高，低质量数据在 CT 里仍能提供广度。"
+  },
+  {
+   "id": "n09",
+   "page": 7,
+   "cat": "data",
+   "key": true,
+   "from": "This ensures that SFT always receives the most recent, verified high-quality data",
+   "to": "without contaminating the supervised signal",
+   "note": "**分流的理由：SFT 只吃最新的、校验过的数据，CT 吸收更宽但不那么干净的数据，这样不污染监督信号。** 校验函数 V(s) 输出 0 或 1，具体怎么实现这一页没展开。"
+  },
+  {
+   "id": "n10",
+   "page": 7,
+   "cat": "data",
+   "from": "SFT and RL are performed more frequently than CT",
+   "to": "agent-specific domains",
+   "note": "SFT 和 RL 比 CT 更频繁地重训。作者还观察到通用 RL 对 agent 领域有明显迁移。他们声称随着迭代，高质量输出的比例会升高，但论文没有给出各轮的比例数据。"
+  },
+  {
+   "id": "n11",
+   "page": 8,
+   "cat": "data",
+   "from": "much of the available data provides only procedural actions while omitting",
+   "to": "spurious or unstable reasoning chains",
+   "note": "第二个问题：很多现成数据只有动作没有思考。只学动作的模型会模仿表面操作，推理链变得虚假或不稳。"
+  },
+  {
+   "id": "n12",
+   "page": 8,
+   "cat": "data",
+   "key": true,
+   "from": "attempted to retroactively add reasoning traces",
+   "to": "original thought process",
+   "note": "**先录操作、事后补推理这条路行不通**，因为几乎不可能还原当时的想法。所以改成 think-aloud：标注员边做边口述，语音和 UI 操作自动对齐。"
+  },
+  {
+   "id": "n13",
+   "page": 8,
+   "cat": "data",
+   "from": "the annotation tool is directly installed on annotators",
+   "to": "alongside their normal usage",
+   "note": "in-situ 采集：标注工具直接装在标注员自己的电脑上，随日常使用悄悄运行，不打断自然工作流。好处是真实场景和持续采集。"
+  },
+  {
+   "id": "n14",
+   "page": 8,
+   "cat": "data",
+   "from": "who provide demonstrations of complex tasks",
+   "to": "trial-and-error, and external resources",
+   "note": "标注员分两组：专家做复杂任务的示范；新手去解自己不熟的任务，靠试错和搜索。新手轨迹记录的是缺乏先验知识时怎么解决问题、怎么适应。"
+  },
+  {
+   "id": "n15",
+   "page": 8,
+   "cat": "task",
+   "from": "a hierarchical task graph is constructed",
+   "to": "cross-scenario transferability",
+   "note": "每个软件先建分层任务图，再给子功能打重要性分，依据是使用频率、用户收益和跨场景可迁移性。然后用人加 LLM 的方式生成从新手到专家、单应用到多应用的多级指令。",
+   "infer": "给剪映、UE 做采集计划时，这套「任务图加打分」可以用来决定先录哪些功能。"
+  },
+  {
+   "id": "n16",
+   "page": 8,
+   "cat": "data",
+   "from": "first transcribed using automatic speech recognition (ASR) and then refined by LLMs",
+   "to": "high-quality reasoning text",
+   "note": "口述录音先转文字（ASR），再让 LLM 润色成连贯的推理文本，然后与屏幕动作同步。后面还提到会程序化地增强语言多样性、丰富推理链，但没说怎么做。"
+  },
+  {
+   "id": "n17",
+   "page": 9,
+   "cat": "data",
+   "from": "such data is typically off-policy",
+   "to": "the model would take when interacting with an environment",
+   "note": "人写的 SFT 数据是 off-policy 的：它不代表模型自己会走到的状态，模型从没见过自己犯错后的局面，所以泛化差。"
+  },
+  {
+   "id": "n18",
+   "page": 9,
+   "cat": "data",
+   "from": "this procedure remains fundamentally offline and inefficient",
+   "to": "only after task failure",
+   "note": "旧办法是让标注员改已录好的轨迹。作者认为这属于离线修正，模型弱点要等任务失败之后才暴露，无法实时介入。"
+  },
+  {
+   "id": "n19",
+   "page": 9,
+   "cat": "data",
+   "key": true,
+   "from": "the latest UI-TARS-2 model proposes candidate actions together with its reasoning",
+   "to": "override it with a better thought and action",
+   "note": "**交互式标注：每个决策点上，模型提出候选动作和推理，标注员可以接受或改写。** 轨迹因此一直是在当前模型会走到的状态上展开，人的精力花在纠偏上。"
+  },
+  {
+   "id": "n20",
+   "page": 10,
+   "cat": "data",
+   "from": "both the annotation model and the pool of tasks are periodically refreshed",
+   "to": "weaknesses of the most recent agent",
+   "note": "标注用的模型和任务池会定期刷新，让采集一直对准最新 agent 的弱点。这就是飞轮里「标注」这条边的含义。"
+  },
+  {
+   "id": "n21",
+   "page": 10,
+   "cat": "verifier",
+   "from": "we adopt a multi-turn RL framework built on RLVR",
+   "to": "Verifiable Rewards",
+   "note": "RL 的基础是 RLVR（可验证奖励的强化学习）：用能自动判对错的信号当 reward，而不是人工打分。多轮的意思是模型与环境多次交互、直到任务结束，才用 reward 优化整条轨迹。"
+  },
+  {
+   "id": "n22",
+   "page": 10,
+   "cat": "task",
+   "from": "Highly revealing attributes are removed, while the remaining ones are rewritten",
+   "to": "reduce specificity",
+   "note": "造题法一，多条件模糊化：从维基百科这类权威来源抽实体和属性，让 LLM 给每个属性打区分度分，删掉最能直接暴露答案的，其余改写得更抽象。答案已知，所以可验证。"
+  },
+  {
+   "id": "n23",
+   "page": 11,
+   "cat": "task",
+   "from": "discarding instances that can be trivially solved using prior knowledge or a single-turn search",
+   "to": "truly challenging and verifiable tasks",
+   "note": "造题法二，多跳链：沿超链接逐层生成，上一跳的答案嵌进下一跳的问题。最后做难度过滤，丢掉模型凭先验知识或一次搜索就能答对的题。过滤标准很实用：能被便宜办法解掉的题没有训练价值。"
+  },
+  {
+   "id": "n24",
+   "page": 11,
+   "cat": "task",
+   "from": "filtering out inaccessible pages, login-gated services, and trivial categories",
+   "to": "casual games",
+   "note": "GUI-General 的造题：从公开网站集合里选站点，排除打不开的、要登录的、静态信息页和休闲游戏，再让 VLM 抽取核心功能、合成单页任务。最终覆盖 690 个网站。因为没有标准答案，这类任务靠 ORM 判分。"
+  },
+  {
+   "id": "n25",
+   "page": 11,
+   "cat": "task",
+   "from": "we synthesize new games using LLMs, which generate lightweight code implementations",
+   "to": "explicit state interfaces",
+   "note": "游戏来源两个：公开的 HTML5/WebGL 小游戏，以及 LLM 写的轻量游戏代码。后者的关键是游戏要暴露显式的状态接口，这样才能验证。"
+  },
+  {
+   "id": "n26",
+   "page": 11,
+   "cat": "verifier",
+   "key": true,
+   "from": "we create concise JavaScript verification scripts that query runtime variables",
+   "to": "remaining lives",
+   "note": "**游戏的 verifier 是短 JS 脚本，直接读运行时变量（得分、关卡、剩余生命）。** 这样 reward 不依赖看图，是确定性的。所有记录统一成含标量 reward、终止标志、元数据的 JSON。"
+  },
+  {
+   "id": "n27",
+   "page": 11,
+   "cat": "verifier",
+   "from": "answers can be matched against reference ground truth",
+   "to": "we instead employ LLM-as-Judge",
+   "note": "reward 来源按「能不能确定性验证」分。有函数验证器的（游戏）直接给二值 reward；GUI-Browsing 有参考答案但答案是文本，就用 LLM judge 把预测和答案比一下（训练时用的是 GPT-4o 当 judge，见 §3.3）。"
+  },
+  {
+   "id": "n28",
+   "page": 11,
+   "cat": "verifier",
+   "key": true,
+   "from": "The ORM takes as input the full text history together with the last five screenshots",
+   "to": "indicating task success",
+   "note": "**没有标准答案时，用 UI-TARS-2 自己当生成式 ORM（outcome reward model）。** 输入是完整文字历史加最后 5 张截图，输出任务是否成功的分数。只给最后 5 张图是为了塞进上下文窗口，这意味着中间的截图证据会被丢掉。"
+  },
+  {
+   "id": "n29",
+   "page": 12,
+   "cat": "task",
+   "from": "training updates commence once completed traces reach the minimum batch size threshold",
+   "to": "subsequent training iterations",
+   "note": "**流式训练：rollout 池里完成的轨迹够一个最小批量就开始训练，没跑完的留在池里下一轮用。** 这样长轨迹不会卡住训练。另外推理做成异步服务，agent 交互逻辑和策略推理解耦。"
+  },
+  {
+   "id": "n30",
+   "page": 12,
+   "cat": "verifier",
+   "key": true,
+   "from": "the reward signal is mainly determined based on the correctness of the final outcome",
+   "to": "infinite continuation",
+   "note": "**reward shaping 的做法很克制：主要只看最终结果对不对**，不给过程分。个别场景加格式奖励和长度惩罚，防止过早停止或无限继续。稀疏 reward 靠 value 模型和优势估计来处理（见下面几条），而不是靠稠密的人工 reward。"
+  },
+  {
+   "id": "n31",
+   "page": 13,
+   "cat": "verifier",
+   "from": "prevents decay in the critic",
+   "to": "lengthy token sequences",
+   "note": "Decoupled GAE：优势估计（advantage，衡量某个动作比平均水平好多少）给策略和 value 模型用不同的衰减系数。这样长序列里 critic（value 模型）的估计不会衰减失真。"
+  },
+  {
+   "id": "n32",
+   "page": 13,
+   "cat": "verifier",
+   "key": true,
+   "from": "offline training of the value model to convergence under a fixed policy",
+   "to": "calibrated value estimation from the outset",
+   "note": "**Value pretraining：** value 模型是 PPO 里估计「当前局面还能拿多少 reward」的网络。他们先固定一个策略（如 SFT 模型），离线把 value 模型训到收敛，再用它初始化 RL。目的是消除 value 初始化偏差。"
+  },
+  {
+   "id": "n33",
+   "page": 13,
+   "cat": "verifier",
+   "from": "greater flexibility for raising the likelihood of low-probability actions",
+   "to": "enlarging the exploration space",
+   "note": "Clip higher：PPO 的剪裁上下界分开设置，上界放宽，让低概率动作更容易被提高；下界保持小，避免过早把 token 压死、输出多样性塌掉。"
+  },
+  {
+   "id": "n34",
+   "page": 13,
+   "cat": "data",
+   "key": true,
+   "from": "starting from a shared SFT initialization, we conduct multiple RL runs tailored to different environments",
+   "to": "GUI-SDK",
+   "note": "**从同一个 SFT 初始化出发，每个领域单独跑一次 RL，再把各领域模型的参数加权平均（权重非负、和为 1）合成一个模型。** 依据是同一预训练检查点微调出来的模型在参数空间里近似线性连通。"
+  },
+  {
+   "id": "n35",
+   "page": 14,
+   "cat": "data",
+   "from": "532M-parameter vision encoder and a Mixture-of-Experts",
+   "to": "23B active parameters",
+   "note": "模型规模：532M 视觉编码器，MoE 语言模型，激活 23B 参数、总共 230B。训练是多轮 SFT、RL 和 RFT 的迭代循环，RFT 就是飞轮里的 rejection sampling。"
+  },
+  {
+   "id": "n36",
+   "page": 14,
+   "cat": "result",
+   "from": "when restricted to GUI-only operation, the scores on BrowseComp-zh and BrowseComp-en are",
+   "to": "32.1% and 7.0%",
+   "note": "**GUI 加 SDK 的收益很大：** 仅 GUI 时 BrowseComp-zh 32.1、BrowseComp-en 7.0；加 SDK 后分别是 50.5 和 29.6。信息检索类任务用终端和工具比纯点击强得多。"
+  },
+  {
+   "id": "n37",
+   "page": 14,
+   "cat": "result",
+   "from": "the RL-trained model transfers effectively to domains that were not",
+   "to": "primary focus of training",
+   "note": "RL 只在浏览器类任务和游戏上训，却提升了别的 benchmark：Online-Mind2Web 83.7 → 88.2，OSWorld 43.0 → 47.5，AndroidWorld 64.6 → 73.3（对比的是最后一轮的 SFT 模型）。论文写的「10.5%」「8.7%」是相对提升，不是百分点。"
+  },
+  {
+   "id": "n38",
+   "page": 15,
+   "cat": "limit",
+   "from": "Terminal Bench results are reported on 75 out of 80 tasks",
+   "to": "internal environment",
+   "note": "Terminal Bench 只跑了 80 题里的 75 题，原因是和自家环境不兼容。所以 45.3 不能直接和别人跑满题的分数比。"
+  },
+  {
+   "id": "n39",
+   "page": 15,
+   "cat": "result",
+   "from": "achieves a mean normalized score of 59.8",
+   "to": "nearly 60% of human-level",
+   "note": "15 个游戏的平均归一化得分 59.8（人类为 100）。表 2 里 SFT 版本是 44.27，RL 版本是 59.77，OpenAI CUA 和 Claude Computer Use 分别是 24.73 和 21.61。"
+  },
+  {
+   "id": "n40",
+   "page": 15,
+   "cat": "limit",
+   "from": "While performance is weaker on Tetris and Sokoban",
+   "to": "very long-horizon planning",
+   "note": "作者承认在 Tetris 和 Sokoban 上偏弱，归因于很长程的规划。表 3 里 Sokoban 只有 0.3。"
+  },
+  {
+   "id": "n41",
+   "page": 16,
+   "cat": "verifier",
+   "key": true,
+   "from": "manual inspection of rewards did not reveal any substantial signs of reward hacking",
+   "to": "evaluated more objectively",
+   "note": "**人工抽查 reward，没发现明显的 reward hacking**（模型钻判分漏洞拿高分），所以作者认为 agent RL 里用 VLM 当 verifier 可行。他们的猜想是 agent 任务的完成度更好定义。这是抽查结论，没有给抽查规模。"
+  },
+  {
+   "id": "n42",
+   "page": 16,
+   "cat": "verifier",
+   "from": "evaluation set containing 300 human-annotated GUI agent traces",
+   "to": "F1 score of 83.8",
+   "note": "为量化 ORM 的可靠度，他们建了 300 条人工标注轨迹的评测集，UI-TARS-2 当 ORM 的二分类 F1 是 83.8。这个数字比「没发现 hacking」更能说明问题。"
+  },
+  {
+   "id": "n43",
+   "page": 16,
+   "cat": "limit",
+   "from": "misclassified cases reveals that the current ORM still exhibits a relatively high",
+   "note": "作者承认 ORM 的假阳性率偏高，也就是把失败判成成功。"
+  },
+  {
+   "id": "n44",
+   "page": 17,
+   "cat": "limit",
+   "from": "the agent might also execute many correct intermediate steps",
+   "to": "incorrect actions",
+   "note": "作者的辩解：即使最终结果判错，轨迹里也有很多正确的中间步骤，假阳性带来的奖励大多落在这些步骤上，正面作用大于错误作用。这是推测，论文没有实验验证。",
+   "infer": "这个解释只在 reward 噪声均匀、错误步骤不系统性被奖励时成立。若 ORM 的误判有偏向（比如偏爱某种看起来完成了的画面），就可能被策略利用。"
+  },
+  {
+   "id": "n45",
+   "page": 18,
+   "cat": "verifier",
+   "from": "Such behavior can be mitigated by explicitly incorporating step budgets",
+   "to": "balance efficiency with performance",
+   "note": "作者指出 agent RL 常见现象是模型学会拉长轨迹来用满预算；可以把步数预算写进 reward 来平衡效率。他们在 GUI-General 里观察到完成任务所需步数随训练下降。"
+  },
+  {
+   "id": "n46",
+   "page": 18,
+   "cat": "verifier",
+   "key": true,
+   "from": "value estimates of PPO-trained models were often negatively correlated with the obtained rewards",
+   "to": "higher rewards throughout training",
+   "note": "**value pretraining 的动机：** 预实验里 PPO 模型的 value 估计常与实际 reward 负相关。加了 value 预训练后，GUI-Browsing 的 reward 全程更高（图 10b）。"
+  },
+  {
+   "id": "n47",
+   "page": 19,
+   "cat": "result",
+   "from": "PPO consistently outperforms GRPO by a clear margin",
+   "to": "lower volatility throughout training",
+   "note": "GRPO（不用 value 模型、靠同题多条回答互相比较的更省事的算法）在这里不如 PPO，PPO 的 reward 更高、波动更小，所以主实验用 PPO。注意这是预实验，不是完整对比。"
+  },
+  {
+   "id": "n48",
+   "page": 19,
+   "cat": "limit",
+   "from": "a reasoning ceiling imposed by the starting backbone rather than a lack of optimization steps",
+   "to": "remaining walls",
+   "note": "Gem-11 和 Hex-frvr 这类游戏 reward 出现平台期或回退，作者判断是基座推理能力的上限，而不是训练步数不够。下一步需要更强的长程推理和规划。"
+  },
+  {
+   "id": "n49",
+   "page": 20,
+   "cat": "data",
+   "from": "Even though the training data for each interface was effectively halved",
+   "to": "the hybrid",
+   "note": "**混合 RL 实验：** 同一个信息检索任务既能用纯 GUI 也能用 GUI 加 SDK，混合训练时每种接口的数据量减半，但在纯 GUI 任务上依然超过只训 GUI 的基线。说明 SDK 里学到的东西会迁移回 GUI。"
+  },
+  {
+   "id": "n50",
+   "page": 21,
+   "cat": "limit",
+   "from": "accuracy decreases slightly from 47.5 to 44.4",
+   "to": "favorable",
+   "note": "W4A8 量化把每轮交互延迟从 4.0 秒降到 2.5 秒，但 OSWorld 从 47.5 掉到 44.4。作者称「小幅下降」，3.1 个点不算小，部署时要自己权衡。"
+  }
+ ],
+ "sections": [
+  {
+   "id": "s01",
+   "page": 1,
+   "title": "摘要",
+   "from": "The development of autonomous agents for graphical user interfaces",
+   "summary": "四个问题（数据、多轮 RL、纯 GUI 的局限、环境稳定性）对应四项方案，并报出 OSWorld 47.5 等分数。读完就知道全文骨架。"
+  },
+  {
+   "id": "s02",
+   "page": 3,
+   "title": "§1 Introduction",
+   "from": "The development of agents that can operate seamlessly within graphical user interfaces",
+   "summary": "把四个难题和四根支柱讲清楚，并预告结果。**数据稀缺、稀疏 reward、纯 GUI 不够用**这几段值得读，结果清单可以扫过。"
+  },
+  {
+   "id": "s03",
+   "page": 4,
+   "title": "§2 UI-TARS-2（概览）",
+   "from": "This section introduces the methodology of UI-TARS-2, a unified framework",
+   "summary": "一段导览，列出后面各节：形式化、沙箱、飞轮、多轮 RL、参数插值。可跳过。"
+  },
+  {
+   "id": "s04",
+   "page": 4,
+   "title": "§2.1 Formulation",
+   "from": "We adopt a native agent perspective",
+   "summary": "把 agent 定义为每步输出思考、动作、观察的循环，动作含 GUI 和 SDK 两类，记忆分工作记忆和压缩的情景记忆。读动作空间和记忆那两段即可。"
+  },
+  {
+   "id": "s05",
+   "page": 5,
+   "title": "§2.2 Environment: All-in-One GUI Sandbox",
+   "from": "Training a general-purpose computer agent that seamlessly integrates",
+   "summary": "**必读**。讲 GUI 和 SDK 共享文件系统的沙箱、几千台 VM 的集群、租约回收，以及游戏用的浏览器沙箱和时间加速。造 RL 环境时的工程清单。"
+  },
+  {
+   "id": "s06",
+   "page": 7,
+   "title": "§2.3 Data Flywheel Overview",
+   "from": "As shown in Figure 3, we introduce the data flywheel that continually",
+   "summary": "**必读**，全文骨架。最新模型出轨迹，校验通过的进 SFT，没通过的进 CT，SFT 和 RL 比 CT 更频繁重训。"
+  },
+  {
+   "id": "s07",
+   "page": 7,
+   "title": "§2.4 CT & SFT Data Preparation",
+   "from": "Agent-related training data represents a significant scarcity in existing",
+   "summary": "说明 agent 轨迹稀缺，所以要同时靠人工交互标注和自动合成。篇幅短，可扫过。"
+  },
+  {
+   "id": "s08",
+   "page": 7,
+   "title": "§2.4.1 In-Situ Annotation for CT",
+   "from": "Our continual pre-training framework spans multiple agent domains",
+   "summary": "**必读**。公开数据不够用且缺推理，所以做装在标注员电脑上的 think-aloud 采集，分专家和新手，并有任务图、难度规则、ASR 加 LLM 润色和双人复核。"
+  },
+  {
+   "id": "s09",
+   "page": 9,
+   "title": "§2.4.2 Interactive Annotation for SFT",
+   "from": "A key challenge in training agents from human-generated SFT data",
+   "summary": "**必读**。人写数据是 off-policy 的，所以让模型提候选、人接受或改写，在线标注并定期刷新模型和任务池。"
+  },
+  {
+   "id": "s10",
+   "page": 10,
+   "title": "§2.5 Multi-turn Reinforcement Learning",
+   "from": "To train agents capable of long-horizon reasoning and interactive decision-making",
+   "summary": "交代 RL 基于 RLVR，并选了 GUI-Browsing、GUI-General、游戏三类任务来讲。短，可扫过。"
+  },
+  {
+   "id": "s11",
+   "page": 10,
+   "title": "§2.5.1 Task Design",
+   "from": "High-quality, sufficiently challenging, and verifiable task data for end-to-end RL",
+   "summary": "**必读**。三类 RL 任务怎么造：维基百科实体做条件模糊化和多跳链、690 个网站的通用任务、带状态接口的游戏。重点是造题时就绑定验证方式，以及难度过滤。"
+  },
+  {
+   "id": "s12",
+   "page": 11,
+   "title": "§2.5.2 Reward Design",
+   "from": "A reliable reward system is essential for stable policy optimization",
+   "summary": "**必读**。按能否确定性验证分三种 reward：游戏脚本、LLM judge 对参考答案、模型自己当 ORM（看最后 5 张截图）。"
+  },
+  {
+   "id": "s13",
+   "page": 11,
+   "title": "§2.5.3 Asynchronous Agent Rollout",
+   "from": "Traditional batch-based rollout approaches often become bottlenecked",
+   "summary": "异步推理服务、流式训练池、有状态环境，解决长尾轨迹拖慢训练。做 RL 基础设施的人读，其他人可扫。"
+  },
+  {
+   "id": "s14",
+   "page": 12,
+   "title": "§2.5.4 RL Training Algorithm",
+   "from": "UI-TARS-2 is trained using Proximal Policy Optimization (PPO), where",
+   "summary": "**必读**。PPO 加 reward shaping、decoupled GAE、length-adaptive GAE、value pretraining、clip higher。公式可跳过，看每个补丁解决什么问题。"
+  },
+  {
+   "id": "s15",
+   "page": 13,
+   "title": "§2.6 Merging Vertical Agents via Parameter Interpolation",
+   "from": "A central goal of UI-TARS-2 is to develop a unified digital agent",
+   "summary": "联合 RL 不稳定又贵，所以各领域分别训、再参数加权平均。想法简单，但论文没给权重选法和具体数字。"
+  },
+  {
+   "id": "s16",
+   "page": 13,
+   "title": "§3 Experiments（概览）",
+   "from": "This chapter presents a comprehensive experimental analysis of UI-TARS-2",
+   "summary": "一段导览，只说聚焦 GUI 和游戏两类。可跳过。"
+  },
+  {
+   "id": "s17",
+   "page": 14,
+   "title": "§3.1 Experimental Setup",
+   "from": "UI-TARS-2 is initialized from the pre-trained checkpoint of Seed-thinking-1.6",
+   "summary": "模型规模（23B 激活、230B 总量）和评测集清单。Terminal Bench 只跑 75/80 题的说明在表 1 图注里。"
+  },
+  {
+   "id": "s18",
+   "page": 14,
+   "title": "§3.2 Main Results",
+   "from": "As shown in Table 1, UI-TARS-2 establishes superior performance across",
+   "summary": "看三点：加 SDK 后 BrowseComp 大幅提升、RL 在 SFT 基线上的增益、15 个游戏平均 59.8。其余表格可跳过。"
+  },
+  {
+   "id": "s19",
+   "page": 15,
+   "title": "§3.3 Detailed Analyses",
+   "from": "In the following, we present the detailed analyses of UI-TARS-2",
+   "summary": "**必读**（接下来几页的训练动态分析）。含熵上升、VLM 当 verifier 没发现 reward hacking 但 ORM 假阳性偏高、value pretraining 的收益、PPO 优于 GRPO、混合 RL 与量化。"
+  },
+  {
+   "id": "s20",
+   "page": 22,
+   "title": "§4 Related Work",
+   "from": "Early LLM-based agents were primarily generic systems driven by prompting",
+   "summary": "综述 GUI agent、游戏 agent、工具和代码 agent 的相关工作。可跳过。"
+  },
+  {
+   "id": "s21",
+   "page": 23,
+   "title": "§5 Conclusion",
+   "from": "In this work, we presented UI-TARS-2, a native GUI-centered agent model",
+   "summary": "一段总结。局限没有单列，要到 §3.3 里找。可跳过。"
+  }
+ ],
+ "ver": "v2"
+}

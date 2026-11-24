@@ -1,0 +1,648 @@
+{
+ "id": "cua-gym",
+ "title": "CUA-Gym",
+ "full": "CUA-Gym: Scaling Verifiable Training Environments and Tasks for Computer-Use Agents",
+ "arxiv": "2605.25624",
+ "pdf": "papers/2605.25624.pdf",
+ "meta": "HKU / Qwen Team (Alibaba) 等 · 2026-06 · 正文 10 页 + 附录共 82 页",
+ "question": "训练环境怎么批量造：任务、状态、reward 一起生成，如何防 reward hacking？",
+ "tldr": [
+  "**三件套一起生成**：指令、环境初始状态、reward 函数从同一个主题说明派生，经过两个角色对抗迭代、两道筛选，最后得到 32,112 条可用于 RL 的数据，覆盖 110 个环境。",
+  "**防作弊靠角色分离**：Generator 造初始和目标环境，Discriminator 只看任务描述和两个造好的环境写 reward，读不到造环境的脚本。早期原型里能读脚本时，它会写出直接赋 True、只查文件存在这类偷懒 reward。",
+  "**reward 合格的操作定义**：目标状态判 1.0，初始状态判 0.0，代码里没有六类禁用写法，最多 5 轮。之后 LLM 投票拒掉约 3,100 条，强模型实跑再拒 1,278 条，留下 32,112 条。",
+  "**环境自己造**：94 个模拟网页应用加 16 个真实桌面应用。mock 暴露统一的状态接口，reward 比较状态 diff 而不是看像素；代价是没有登录、第三方集成和网络波动，只是近似真实应用。",
+  "**结果**：OSWorld-Verified 上 35B-A3B 从 54.5 到 62.1，397B-A17B 从 62.2 到 72.6，held-out 的 WebArena 提升 2 到 4 个点。数据量的规模效应清楚，环境多样性的证据偏弱且对照混了变量。",
+  "**承认的局限**：reward 只验终态，防作弊没有形式化保证，mock 是近似，最大的 RL 实验是单种子。"
+ ],
+ "forUs": [
+  "论文明说只有轨迹的数据是模仿目标，不是结果奖励，不能直接做 RL。我们采集的剪映、UE 轨迹要进 RL，需要补三件套。一个可试的做法（不是论文做法）：轨迹起始时的工程快照当初始状态，结束时的工程当 golden 状态，再让一个只看指令和这两份工程的角色写 reward，用初始判 0、结束判 1 验收。",
+  "信息隔离可以直接搬：写 reward 的一方只能看工程导出的结构化状态（关卡、资产、属性），不能读造任务的脚本。reward 判最终的字段和值，不判路径，这样 GUI、MCP、代码三种接口都能共用同一个 verifier。",
+  "第 16、79、81 页的验收规则可以当审查清单：两端点判分、禁用写法扫描（只查存在、硬编码、subprocess）、只给任务引入的变化计分、critic 的六条拒绝理由。但论文没覆盖中间状态打分、对目标状态过拟合、破坏性操作这三件事，要自己补。",
+  "mock 路线对 3D 软件基本不适用：场景图、资产、渲染没法做成单页应用加状态接口。更现实的是真软件加快照复位，再通过脚本或 MCP 导出结构化状态。状态注入、读取、重置、diff 这套接口思想可以借。",
+  "成本参照：每条约 0.43 美元，其中虚拟机占大头。UE 启动和渲染更重，单条会更贵。论文的 32,112 条里创意与媒体类只占 1.3%，这块几乎没人做。"
+ ],
+ "readFirst": [
+  {
+   "label": "§2.1 Adversarial Setup",
+   "why": "为什么要把造环境和写 reward 拆给两个 agent",
+   "note": "n10"
+  },
+  {
+   "label": "附录 A.3.1 五条验收条件",
+   "why": "reward 能区分初始和目标状态的操作定义",
+   "note": "n35"
+  },
+  {
+   "label": "附录 E.3 reward 作弊案例",
+   "why": "早期原型里实际出现的作弊写法",
+   "note": "n46"
+  },
+  {
+   "label": "附录 G.4 Discriminator prompt",
+   "why": "只给任务引入的变化计分，可直接复用",
+   "note": "n49"
+  },
+  {
+   "label": "附录 A.4.3 过滤产量",
+   "why": "最终筛掉多少、各阶段各拒多少",
+   "note": "n40"
+  },
+  {
+   "label": "§4.2 环境扩展实验",
+   "why": "环境多样性证据偏弱，对照混了变量",
+   "note": "n27"
+  },
+  {
+   "label": "§6 Limitations",
+   "why": "终态验证和 mock 的代价",
+   "note": "n29"
+  }
+ ],
+ "notes": [
+  {
+   "id": "n01",
+   "page": 1,
+   "cat": "task",
+   "key": true,
+   "from": "co-generates task instructions, environment states, and reward functions jointly",
+   "to": "from a shared topic specification",
+   "note": "**一条训练数据是（指令，环境初始状态，reward 函数）三件套，三者从同一个主题说明一起生成。**不是先造题、再给它补判分程序，所以三者的一致性是构造出来的，不靠事后对齐。",
+   "infer": "对 UE、Maya 任务同理：初始工程、任务描述、判分脚本最好出自同一个流程，而不是分三批人各做一份。"
+  },
+  {
+   "id": "n02",
+   "page": 1,
+   "cat": "verifier",
+   "key": true,
+   "from": "a separate Discriminator agent writes the reward function from the task specification alone",
+   "to": "distinguishes the initial and golden environments upon execution",
+   "note": "生成方（Generator）造初始和目标两个环境状态，另一个独立的 Discriminator agent 只凭任务描述写 reward 函数，直到它在执行时能把两个状态区分开。golden 状态指任务完成后应有的标准答案状态。**写 reward 的一方看不到环境是怎么造的**，这是防作弊的核心设计。"
+  },
+  {
+   "id": "n03",
+   "page": 1,
+   "cat": "result",
+   "from": "achieve 62.1% and 72.6% on OSWorld-Verified",
+   "to": "at comparable scales",
+   "note": "两个模型分别在 OSWorld-Verified（真实桌面应用上的任务评测）拿到 62.1% 和 72.6%。基座分别是 54.5 和 62.2（第 6 页），所以提升是 +7.6 和 +10.4。"
+  },
+  {
+   "id": "n04",
+   "page": 1,
+   "cat": "task",
+   "from": "where a training instance reduces to a problem statement",
+   "to": "and a checkable answer",
+   "note": "RLVR（带可验证奖励的强化学习）的做法是：让模型自己反复尝试，由程序给每次尝试打分，分高的做法被强化。数学和代码一道题只需要题目加标准答案。CUA（操作电脑的 agent）需要指令、可复位的环境、判分程序三样，每样都是工程产物，这是它数据难造的根源。"
+  },
+  {
+   "id": "n05",
+   "page": 2,
+   "cat": "data",
+   "from": "provide trajectory-level imitation targets rather than outcome rewards",
+   "to": "leaving them unusable for RL",
+   "note": "只有操作轨迹、没有结果判分的数据只能做模仿学习（照着学），不能直接做 RL，因为 RL 需要能对任意一次新尝试打分的东西。",
+   "infer": "我们采集的专家轨迹属于这一类。要进 RL，还得为每条任务补上可复位的初始状态和可执行的终态 reward。"
+  },
+  {
+   "id": "n06",
+   "page": 2,
+   "cat": "verifier",
+   "from": "can score arbitrary tasks but introduce reward noise",
+   "to": "destabilizes policy optimization",
+   "note": "让 VLM 看截图当裁判，覆盖面广，但会误判，RL 又会放大误判，训练不稳。所以本文训练用的 reward 是代码断言，VLM 只在筛数据阶段当交叉检查（第 18 页）。"
+  },
+  {
+   "id": "n07",
+   "page": 2,
+   "cat": "result",
+   "from": "expanding the environment pool from 10 to 80 environments",
+   "to": "trajectory volume alone cannot recover",
+   "note": "引言宣称：环境从 10 个扩到 80 个，带来的收益单靠多采轨迹补不回来。但正文 §4.2 的实验给出的证据没有这么强，见第 8 页的批注。"
+  },
+  {
+   "id": "n08",
+   "page": 3,
+   "cat": "task",
+   "from": "all three components are derived from a single query specification",
+   "to": "ensuring consistency by construction",
+   "note": "指令、环境状态、reward 都从同一份 query 说明派生。代价是这份说明必须足够具体：说明含糊，三件套会一起错，后面的筛选主要就是在抓这类问题。"
+  },
+  {
+   "id": "n09",
+   "page": 3,
+   "cat": "task",
+   "from": "We therefore generate each task as an instruction-context pair",
+   "to": "required of the initial environment",
+   "note": "每个任务除了指令 t，还带一份 context c，写明初始环境里要有哪些实体、文件和应用状态。context 是造环境和写 reward 共同依赖的合同。附录第 77 页的 prompt 要求它至少 300 字，必须写清初始状态、标准答案、指令没说的隐含前提。"
+  },
+  {
+   "id": "n10",
+   "page": 3,
+   "cat": "verifier",
+   "key": true,
+   "from": "A single agent, however, cannot be trusted with both sides of the problem",
+   "to": "offers little signal under RL training",
+   "note": "**同一个 agent 既造标准答案又写判分，判分就会去核对“我是怎么造的”，而不是“任务有没有做成”**，这样的数据在 RL 里几乎没有训练信号。所以拆成两个角色，中间隔一道信息屏障。"
+  },
+  {
+   "id": "n11",
+   "page": 3,
+   "cat": "verifier",
+   "from": "The Discriminator runs in a sandboxed process with no access to",
+   "to": "it sees only t and the two resulting environments",
+   "note": "隔离是进程级的：Discriminator 在独立沙箱里运行，读不到 Generator 的脚本和工作目录，只能看到任务描述和两个已造好的环境。被挡住的是造目标状态的过程，不是目标状态本身。",
+   "infer": "它仍能看到目标状态，所以 reward 仍可能过拟合目标状态里的具体数值。论文正文没有就此做实验。"
+  },
+  {
+   "id": "n12",
+   "page": 4,
+   "cat": "data",
+   "from": "an LLM majority vote that scores each tuple along",
+   "to": "reward signal tracks task success",
+   "note": "循环内的收敛只能保证三件套自洽，发现不了指令含糊、没有任何策略做得成这类问题，它们要等真实 rollout（让模型实际跑一遍任务）才暴露。所以再加两道筛：多个 LLM 投票，按一致性、可执行性、作弊风险、清晰度、难度校准打分；然后用强模型真跑一遍。"
+  },
+  {
+   "id": "n13",
+   "page": 4,
+   "cat": "task",
+   "from": "real websites are unsuitable as RL training environments",
+   "to": "inject, inspect, or reset programmatically",
+   "note": "真实网站做不了 RL 环境：要登录、有限流、状态没法注入也没法复位。所以他们自己造模拟网页应用（mock）。",
+   "infer": "剪映、UE 是真软件，造不出 mock。附录第 31 页显示他们的桌面环境靠虚拟机快照复位，我们大概率也只能走这条路。"
+  },
+  {
+   "id": "n14",
+   "page": 4,
+   "cat": "task",
+   "key": true,
+   "from": "recover state transitions as structured diffs",
+   "to": "an unambiguous substrate",
+   "note": "**每个 mock 暴露统一的状态接口：能注入初始状态、读取当前状态、重置。**reward 不解析界面像素，而是比较初始状态和当前状态的结构化差异。这是 mock 环境能便宜地产出确定性 reward 的关键。",
+   "infer": "对 UE、Maya 的对应物是工程文件和场景数据的结构化导出，而不是截图。"
+  },
+  {
+   "id": "n15",
+   "page": 4,
+   "cat": "task",
+   "from": "A Plan Agent grounds each mock in its real-world target through web research",
+   "to": "serves as the verification oracle",
+   "note": "造 mock 用三个 agent 分工：Plan 查资料写规格和 UI 布局树，Dev 写单页应用，Web 用 Playwright 点遍每个交互元素并对照布局树找差异，反馈给 Dev 改，直到收敛。保真度的标准是规格里的布局树，真实应用只通过 Plan 阶段的研究和参考截图间接进入。",
+   "infer": "附录第 25 页的统计显示 mock 很小：源码中位数约 5,663 行，平均 15 个路由、约 6 个数据实体。"
+  },
+  {
+   "id": "n16",
+   "page": 5,
+   "cat": "data",
+   "from": "We additionally curate 3,578 trajectories for SFT warm-up by rolling out",
+   "to": "retaining only successful completions",
+   "note": "训练分两步：先让 Claude Sonnet 4.6 在同一批任务上跑，只留 reward 判成功的 3,578 条轨迹做监督微调（SFT，先教会模型基本操作格式），再做 RL。RL 用的是 32,112 条里抽出的 10,858 条。**verifier 同时当了拒绝采样的过滤器。**"
+  },
+  {
+   "id": "n17",
+   "page": 6,
+   "cat": "data",
+   "from": "We train all models with Group Sequence Policy Optimization",
+   "to": "stability for mixture-of-experts RL training",
+   "note": "RL 算法用 GSPO，思路和 GRPO 一类：同一个任务让模型跑一组 rollout（附录第 31 页写 G=16），每条按 reward 相对组内平均的高低决定被强化还是被压制。reward 是 0 到 1 的连续分，所以做对一部分也有信号。"
+  },
+  {
+   "id": "n18",
+   "page": 6,
+   "cat": "result",
+   "from": "The gain persists at the larger scale rather than diminishing",
+   "to": "observed to plateau",
+   "note": "35B-A3B 从 54.5 到 62.1，397B-A17B 从 62.2 到 72.6，训完的小模型追平了没训的大模型基座。作者强调大模型上的收益没有缩小。"
+  },
+  {
+   "id": "n19",
+   "page": 6,
+   "cat": "result",
+   "from": "a held-out browser benchmark whose site clones are disjoint",
+   "to": "mock web applications used during training",
+   "note": "WebArena 上的提升很小：35B 从 40.8 到 44.5，397B 从 54.0 到 56.0。作者解读为技能能迁移到真实浏览器环境。",
+   "infer": "最大的几组 RL 是单种子，2 个点的差距要打折看。"
+  },
+  {
+   "id": "n20",
+   "page": 6,
+   "cat": "limit",
+   "from": "versus its SFT-initialized base",
+   "to": "n denotes task count per domain",
+   "note": "分应用看（图 5a，35B-A3B）：calc 提升 25.5 个点、multi_apps 提升 12.2 个点，但 chrome 降 8.7、thunderbird 降 13.4、vlc 降 24.5，各域只有 15 到 93 题。图注还说分域数字取自 run-4 checkpoint。",
+   "infer": "run-4 说明有多次训练，分域数字取自其中一次。总分提升是靠少数域拉起来的，不是各域均匀变好。"
+  },
+  {
+   "id": "n21",
+   "page": 7,
+   "cat": "task",
+   "from": "software usage distributions from the Anthropic Economic Index",
+   "to": "which shape the within-category selection",
+   "note": "选哪些应用造 mock：先按 O*NET 职业分类决定类别，再按 Anthropic Economic Index 的使用频率在类别里挑。附录第 22 页写明频率归一化后当每类的造环境预算，占比低于 1% 的长尾不造。",
+   "infer": "Anthropic Economic Index 统计的是人们让 Claude 做什么，拿它当软件使用时间的代理会有偏差，论文没有讨论。"
+  },
+  {
+   "id": "n22",
+   "page": 7,
+   "cat": "data",
+   "from": "the harder regime: 45% of tasks are labeled hard",
+   "to": "38% involve cross-application workflows",
+   "note": "难度和跨应用比例是采样时的硬约束（附录第 15 页：hard 不少于 40%，跨应用不少于 35%，单类不超过 21%）。难度按步数定义：easy 不超过 3 个原子操作，medium 3 到 10 步，hard 需要长程规划（第 14 页）。表 9 显示创意与媒体类只有 412 条，占 1.3%。",
+   "infer": "剪辑、3D 这类创意软件在这个语料里几乎没有，这是我们的空白，也是可以做出差异的地方。"
+  },
+  {
+   "id": "n23",
+   "page": 7,
+   "cat": "verifier",
+   "key": true,
+   "from": "The resulting training curves additionally serve as a diagnostic",
+   "to": "characteristic instabilities in RL optimization",
+   "note": "**论文对信息隔离是否有效的唯一直接证据，是训练曲线稳不稳。**可被利用的 reward 通常让训练奖励上去、真实成绩不涨甚至崩溃，所以曲线平稳被当成旁证。",
+   "infer": "这是间接证据。正文没有给出被 hack 的 reward 占比，也没有隔离与不隔离的对照实验。"
+  },
+  {
+   "id": "n24",
+   "page": 7,
+   "cat": "result",
+   "from": "The 12K run attains the highest peak",
+   "to": "plateau closer to the baseline",
+   "note": "数据量 1.4K、3K、12K 三组对比，其他设置固定：数据越多，上限越高、起飞越早，12K 的曲线没有饱和迹象，小数据组基本停在基线附近。",
+   "infer": "只有三个数据点、单种子，规模效应是定性结论。"
+  },
+  {
+   "id": "n25",
+   "page": 8,
+   "cat": "verifier",
+   "from": "all three runs improve monotonically from the SFT baseline",
+   "to": "the data scales we examine",
+   "note": "三种数据量的 RL 都单调上升，没有出现训练奖励涨而真实成绩不涨的脱钩。这是上一条诊断的结果。",
+   "infer": "图 7 只画了 100 个 RL 步，而完整训练是 1000 步（附录第 31 页）。作弊行为往往在训练更久后才出现，这个窗口看不到。"
+  },
+  {
+   "id": "n26",
+   "page": 8,
+   "cat": "data",
+   "from": "We construct three environment-scale settings drawn from the",
+   "to": "6K trajectories, 75 per env",
+   "note": "环境多样性消融故意不用 RL（太贵），改用蒸馏：用 Claude Sonnet 4.6 跑任务，只留 reward 等于 1 的轨迹做 SFT，学生是同一个 35B-A3B。三组：窄（10 环境，每个 300 条）、中（80 环境，每个 38 条）、宽（80 环境，每个 75 条）。窄对中总量相同，只变环境数；中对宽环境相同，只变轨迹量。"
+  },
+  {
+   "id": "n27",
+   "page": 8,
+   "cat": "result",
+   "key": true,
+   "from": "Adding environments at fixed data produces a modest",
+   "note": "**环境多样性的直接结果只是小幅提升**，翻倍轨迹量的提升更大（第 9 页）。这和引言说的环境多样性带来轨迹量补不回来的收益有落差。",
+   "infer": "图注拿窄组（10 环境，3K 条）和宽组（80 环境，6K 条）比，说宽组每个环境的轨迹少 4 倍却更好，但宽组的总轨迹量是窄组的 2 倍，这个对比混了两个变量。且它是蒸馏实验，不是 RL。"
+  },
+  {
+   "id": "n28",
+   "page": 9,
+   "cat": "result",
+   "from": "We attribute this to step-budget pressure under group-normalized advantage estimation",
+   "to": "than those that time out",
+   "note": "RL 之后策略自己学会一次发多个动作，轨迹缩短 33% 到 45%，任务成绩不变。作者的解释：每个任务有步数上限，在上限内做完的 rollout 比超时的得分高，被强化。批量只用在确定性操作上，右键、双击这类结果不可预期的动作几乎都单独发（附录第 33 页）。"
+  },
+  {
+   "id": "n29",
+   "page": 10,
+   "cat": "limit",
+   "from": "rewards verify terminal environment states rather than the full process",
+   "to": "recreates the same final state",
+   "note": "作者承认：reward 只验终态，分不出干净地修改，和先删光再重建出同样结果。这是终态验证的共同代价，换来的是 reward 好写、不限定操作路径。",
+   "infer": "剪映、UE 有撤销栈和工程历史，破坏性操作会被当成成功。"
+  },
+  {
+   "id": "n30",
+   "page": 10,
+   "cat": "limit",
+   "from": "reduce but do not formally eliminate residual reward-hacking modes",
+   "to": "state proxies that correlate with task success",
+   "note": "作者承认：信息屏障和禁用写法扫描只能降低风险，没有形式化保证。残留的风险是语义检查太松，和与成功相关但不等于成功的状态代理。",
+   "infer": "例如检查某个标志位被改了，而不是检查实际结果。"
+  },
+  {
+   "id": "n31",
+   "page": 10,
+   "cat": "limit",
+   "from": "remain approximations of real applications: authentication flows, third-party",
+   "to": "outside the current mock surface",
+   "note": "作者承认：mock 里没有登录、第三方集成、网络延迟、限流和罕见的服务端故障。",
+   "infer": "这些恰好是真实使用中容易让 agent 卡住的地方，所以 mock 上的训练收益不等于真实应用上的收益。WebArena 上 2 到 4 个点的提升是论文给的唯一外部检验。"
+  },
+  {
+   "id": "n32",
+   "page": 10,
+   "cat": "limit",
+   "from": "our largest RL runs are reported with single seeds due to their compute cost",
+   "note": "作者承认：最大的 RL 实验只跑了单个随机种子（约 5 天，见第 32 页）。所有对比都没有方差估计，小差距要打折看。"
+  },
+  {
+   "id": "n33",
+   "page": 14,
+   "cat": "task",
+   "from": "we construct a feature taxonomy tree whose internal nodes group related capabilities",
+   "to": "leaves correspond to atomic UI capabilities",
+   "note": "任务不是让 LLM 随手想，而是先给每个应用建功能树（深度不超过 4、每层分支不超过 12，叶子是单个界面能力），再按平台、领域、难度、场景、单应用或跨应用五个维度采样，并用反频率加权去补冷门格子。libreoffice_calc 的树有 147 个叶子（第 15 页）。",
+   "infer": "对剪映、UE 要做类似覆盖，需要先有一棵功能树。"
+  },
+  {
+   "id": "n34",
+   "page": 15,
+   "cat": "data",
+   "from": "No domain category exceeds 21% of the final dataset",
+   "to": "Each application receives at least 1,000 verified tuples",
+   "note": "覆盖目标写成硬指标：单类别不超过 21%，hard 不少于 40%，跨应用不少于 35%。",
+   "infer": "最后一条每个应用至少 1,000 条，和 110 个环境共 32,112 条的总量对不上（110 乘 1,000 就超了），附录 F 里 Media 类只有 150 条。这些应理解为采样目标而非最终结果，我没找到论文对此的解释。"
+  },
+  {
+   "id": "n35",
+   "page": 16,
+   "cat": "verifier",
+   "key": true,
+   "from": "ensure the environment artifacts are well-formed",
+   "to": "at the two endpoint states",
+   "note": "**验收一个 reward 的五条硬标准：初始环境能建成、目标环境能建成、reward（目标）等于 1.0、reward（初始）等于 0.0、reward 代码里没有禁用写法。**这就是 reward 能区分初始状态和目标状态的操作定义，由程序检查，不靠 LLM 判断。",
+   "infer": "它只测两个端点。做了一半的中间状态打分是否合理，这五条没有覆盖。"
+  },
+  {
+   "id": "n36",
+   "page": 16,
+   "cat": "verifier",
+   "from": "is scanned at write-time against the following pattern list",
+   "to": "with the matched pattern as feedback",
+   "note": "reward.py 一写出来就用正则和 Python AST 扫一遍，命中就作废本轮并把命中的模式反馈给 Discriminator。六类禁用写法：直接给通过标志赋 True、占位验证、成功路径上硬编码返回 0.5 或 1.0、只查文件存在不查内容、调用 subprocess、只有注释声称检查而没有代码。",
+   "infer": "禁 subprocess 的理由是不可复现、易伪造，但这也让 reward 很难调用应用本身去重新计算或渲染，限制了能检查的内容。"
+  },
+  {
+   "id": "n37",
+   "page": 17,
+   "cat": "verifier",
+   "from": "tuples that fail to converge by round 5 are dominated by",
+   "to": "no amount of script revision will fix",
+   "note": "对抗循环最多 5 轮，不收敛就丢弃。作者故意不加轮数：没收敛的主要是指令含糊或本身无解，改脚本改不好，不如回到任务生成的补缺阶段。"
+  },
+  {
+   "id": "n38",
+   "page": 18,
+   "cat": "verifier",
+   "from": "Concordance between the two is a strong signal that the reward function",
+   "to": "or the task itself is under-specified",
+   "note": "强模型每次 rollout 打两个分：代码 reward，和一个只看最终截图加验收清单的 VLM 裁判。两者一致说明 reward 忠于任务意图，不一致说明 reward 太窄或任务没写清，退回 Discriminator 改。VLM 只在筛数据时当交叉检查，不进训练 reward。"
+  },
+  {
+   "id": "n39",
+   "page": 18,
+   "cat": "data",
+   "from": "Both means equal 0: plausibly unsolvable; removed from the corpus",
+   "to": "down-sampled to control the easy-tail",
+   "note": "强 teacher 全做不成的任务剔除（可能无解），第一次就全做成的降采样（太简单）；两种打分差距大的退回改 reward，两轮还不收敛就丢。留下的是 teacher 做得出但不稳定的题。这样挑的原因见第 31 页：一组 rollout 全对或全错时优势为 0，没有梯度。"
+  },
+  {
+   "id": "n40",
+   "page": 18,
+   "cat": "data",
+   "key": true,
+   "from": "contribute roughly 70/30 to total filter loss",
+   "to": "rejects approximately 3,100 tuples",
+   "note": "**最终过滤的账：LLM 投票拒掉约 3,100 条，teacher 实跑再拒 1,278 条（打不通或第一次就满分），合计约 4,378 条，留下 32,112 条。**论文没给循环阶段（5 轮没收敛）丢了多少，所以生成了多少候选无法从文中反推。",
+   "infer": "4,378 除以（32,112 加 4,378）约 12%，但这只是循环之后的损失，不含循环里被丢的。"
+  },
+  {
+   "id": "n41",
+   "page": 20,
+   "cat": "data",
+   "from": "Each entry is born from a specific debugging episode in early development",
+   "to": "wasted adversarial round",
+   "note": "每个应用配一份 SKILL.md，Generator 和 Discriminator 都读：库用法、文件路径、模板，以及一份苦涩教训清单。例如 openpyxl 读公式单元格拿到的是公式字符串，不是计算结果。教训从拒绝日志里持续补进去。**这是把人工经验固化进流水线的位置**：两个 agent 共享领域知识，但不共享 setup 脚本。",
+   "infer": "我们做 Maya、UE 的流水线同样需要这类 skill 文件，并且可以由失败日志驱动更新。"
+  },
+  {
+   "id": "n42",
+   "page": 26,
+   "cat": "verifier",
+   "from": "are masked before diff to prevent passive viewing actions",
+   "to": "from polluting the diff",
+   "note": "状态 diff 的规则是专为写 reward 调过的：对象递归比较；数组按序列比，任何位置不同整个数组算变化，防止重排被误判为部分正确；上次查看时间这类易变字段先屏蔽，免得光看一眼就污染 diff。"
+  },
+  {
+   "id": "n43",
+   "page": 27,
+   "cat": "verifier",
+   "key": true,
+   "from": "Reward verification for these tasks is value-level rather than path-level",
+   "to": "any UI route to populate them",
+   "note": "**reward 按哪些字段最终有什么值来判，不管 agent 走了哪条界面路径。**约 25 个字段的 CRM 表单因此也能自动判。和 Terminal-Bench 只查终态是同一个思路。"
+  },
+  {
+   "id": "n44",
+   "page": 32,
+   "cat": "data",
+   "from": "completes in approximately 5 days of wall-clock time",
+   "to": "Cost is dominated by rollout",
+   "note": "一次 1000 步 RL：35B-A3B 约 5 天、23,040 GPU 小时；397B-A17B 同样约 5 天、61,440 GPU 小时。成本主要在 rollout（让模型真的去操作虚拟机），训练器大部分时间在等。附录第 31 页写明 rollout 连的是 2,000 台并行的 OSWorld 虚拟机。"
+  },
+  {
+   "id": "n45",
+   "page": 43,
+   "cat": "verifier",
+   "from": "Q2 roadmap slide lists exactly 3 committed items from the top-5",
+   "note": "跨应用例子：从 Slack mock 读投票结果，在 Impress 做 5 页 PPT，再导出 PDF。reward 有 7 个分项，对 PPT 只做结构和文字检查（页数、关键词、表格内容），第 48 页的代码里用的是子串匹配。",
+   "infer": "这类 reward 判内容有没有，判不了排版和视觉质量。剪映、UE 的产出好不好看，需要另一种 verifier。"
+  },
+  {
+   "id": "n46",
+   "page": 68,
+   "cat": "verifier",
+   "key": true,
+   "from": "observed in early prototyping where the Discriminator was given access to",
+   "to": "every example below is rejected at write-time",
+   "note": "**早期原型里，Discriminator 能读 Generator 的脚本时，会写出偷懒的 reward**：比如看到标准答案只改了一个属性，就直接给标志位赋 True。文中说三类，附录只给出两例。流水线里这些例子在写入时就被拒掉。这里的作弊者是写 reward 的 LLM，不是被训练的策略。",
+   "infer": "论文没有讨论被训练的策略反过来利用 reward 或环境漏洞（例如通过状态接口）的情况。"
+  },
+  {
+   "id": "n47",
+   "page": 69,
+   "cat": "verifier",
+   "from": "accidentally populates the Optimistic scenario with the Pessimistic values",
+   "to": "a copy-paste regression",
+   "note": "一轮迭代的真实记录：Generator 把乐观方案误填成了悲观方案的数值，Discriminator 给目标状态打分只有 0.65，没到 1.0，于是反馈给 Generator 修。说明反向也成立：reward 能暴露造环境一方的 bug。"
+  },
+  {
+   "id": "n48",
+   "page": 73,
+   "cat": "data",
+   "from": "a single accepted tuple consumes on average",
+   "to": "of LLM spend per verified tuple",
+   "note": "**单条数据造价：LLM 约 0.11 美元，虚拟机约 0.32 美元（双虚拟机约 45 分钟，第 74 页），合计约 0.43 美元。**整个语料约 3,300 到 3,500 美元的 LLM 和约 1 万美元的虚拟机。虚拟机时间约是 LLM 费用的 3 倍。",
+   "infer": "桌面环境的瓶颈是机器时间，不是模型调用。UE 这类重应用启动和渲染更慢，成本结构会更偏向机器。"
+  },
+  {
+   "id": "n49",
+   "page": 79,
+   "cat": "verifier",
+   "key": true,
+   "from": "Litmus test: if a check passes on the initial_env artifact",
+   "to": "MUST NOT award points",
+   "note": "**给 Discriminator 的核心规则：每个得分项必须验证初始和目标之间确实不同的东西。**初始状态就为真的性质（比如某张表是可见的）只能当前置条件，不能给分，否则 reward（初始）不为 0。",
+   "infer": "这条可以原样当作我们审查 reward 的 prompt。"
+  },
+  {
+   "id": "n50",
+   "page": 81,
+   "cat": "verifier",
+   "from": "reward checks artifacts or implementation traces more than user-goal completion",
+   "to": "subjective task with rigid single-answer reward",
+   "note": "最终筛选 critic 的拒绝清单：reward 查产物或实现痕迹多于查用户目标；对窗口、进程状态太敏感；依赖脆弱的内部实现；隐含环境给不了的前提；指令、状态、reward 对不上且只改指令修不好；主观任务却用单一标准答案。critic 只能改指令，不能动 setup 和 reward，需要改就直接拒（第 80 页）。"
+  }
+ ],
+ "sections": [
+  {
+   "id": "s01",
+   "page": 1,
+   "title": "摘要",
+   "from": "Reinforcement learning with verifiable rewards (RLVR) has driven breakthroughs",
+   "summary": "一页讲完全文：三件套联合生成、Generator 与 Discriminator 分工、最终过滤、94 个 mock 网页应用，以及 32,112 条数据和 OSWorld-Verified 的 62.1% 与 72.6%。读完就知道骨架。"
+  },
+  {
+   "id": "s02",
+   "page": 1,
+   "title": "§1 Introduction",
+   "from": "Reinforcement learning with verifiable rewards (RLVR) has emerged as the dominant",
+   "summary": "说明 CUA 的 RL 数据为什么难造：一条数据是指令、环境、reward 三件套，手写一条要几小时，现有方案各缺一块（模仿数据没有奖励、VLM 裁判有噪声、代码型方案规模小）。贡献列表可以扫过，前半的问题陈述要看。"
+  },
+  {
+   "id": "s03",
+   "page": 3,
+   "title": "§2.1 Data Synthesis",
+   "from": "We formulate RLVR data for CUA training as a collection of tuples",
+   "summary": "**全文方法核心，必读。**讲任务与上下文怎么生成、为什么把造环境和写 reward 拆给两个角色并隔离信息、循环收敛后还要过一道数据集级筛选。"
+  },
+  {
+   "id": "s04",
+   "page": 4,
+   "title": "§2.2 Environment Scaling",
+   "from": "is upper-bounded by the diversity of available environments",
+   "summary": "讲为什么要自己造模拟网页应用，以及 Plan、Dev、Web 三个 agent 怎么造、状态注入和会话隔离怎么让一个 mock 支持很多任务。想了解 mock 路线的读，做 3D 软件的可以只看思路。"
+  },
+  {
+   "id": "s05",
+   "page": 5,
+   "title": "§3.1 Experimental Setup",
+   "from": "We sample 10,858 verified tuples from",
+   "summary": "训练配方：10,858 条 RL 数据、3,578 条 SFT 预热轨迹、两个 Qwen3.5 基座、GSPO 算法和轨迹切片的上下文处理。想知道数据怎么进 RL 的读，算法公式可以跳过。"
+  },
+  {
+   "id": "s06",
+   "page": 6,
+   "title": "§3.2 Main Results",
+   "from": "Table 5b reports performance on OSWorld-Verified",
+   "summary": "主结果：两个规模分别提升 7.6 和 10.4 个点，WebArena 提升 3.7 和 2.0 个点。图 5a 的分应用结果里有几个域是退步的，值得看。"
+  },
+  {
+   "id": "s07",
+   "page": 7,
+   "title": "§4 Analysis",
+   "from": "The environment pool (Figure 6a) is grounded in two external sources",
+   "summary": "数据集构成：环境从 O*NET 和 Anthropic Economic Index 选，45% 是 hard、38% 是跨应用，并与已有数据集对比。"
+  },
+  {
+   "id": "s08",
+   "page": 7,
+   "title": "§4.1 Data Scaling",
+   "from": "A central premise of",
+   "summary": "用 1.4K、3K、12K 三个子集做 RL，数据越多上限越高且曲线平稳；作者还把曲线平稳当作信息隔离有效的旁证。**想知道防作弊证据有多强的必读。**"
+  },
+  {
+   "id": "s09",
+   "page": 8,
+   "title": "§4.2 Environment Scaling",
+   "from": "The data-scaling results of",
+   "summary": "用蒸馏而不是 RL 比较 10 个与 80 个环境。直接结果只是小幅提升，图注的对比还混了总轨迹量，证据比引言说的弱。**必读，注意读图注之外的正文。**"
+  },
+  {
+   "id": "s10",
+   "page": 9,
+   "title": "§4.3 Emergent Multi-Action Tool Calls",
+   "from": "A behavior we did not optimize for emerges in",
+   "summary": "RL 后策略自己学会一次发多个动作，轨迹缩短 33% 到 45%。是个有趣的副产物，和造数据关系不大，可跳过。"
+  },
+  {
+   "id": "s11",
+   "page": 10,
+   "title": "§6 Limitations",
+   "from": "verify terminal environment states rather than the full process",
+   "summary": "作者承认的三点：只验终态、防作弊无形式化保证、mock 是近似加单种子。**必读，很短。**"
+  },
+  {
+   "id": "s12",
+   "page": 14,
+   "title": "附录 A.2 Task Generation",
+   "from": "For each application, we construct a feature taxonomy tree",
+   "summary": "任务生成的细节：功能树、五维采样矩阵、三轮生成（广度、补缺、边界）、三道去重和覆盖指标。想自己造任务分布的读。"
+  },
+  {
+   "id": "s13",
+   "page": 16,
+   "title": "附录 A.3 对抗循环",
+   "from": "is accepted by the loop iff all five of the following",
+   "summary": "**必读。**五条验收条件、进程级信息屏障、六类禁用写法的静态扫描。reward 如何区分初始和目标状态的操作定义在这里。"
+  },
+  {
+   "id": "s14",
+   "page": 17,
+   "title": "附录 A.4 Filter Module",
+   "from": "Loop-accepted tuples enter a dataset-level filter implemented as",
+   "summary": "最终筛选的细节：LLM 投票的评分表与聚合规则、teacher 实跑加 VLM 交叉检查、入选条件，以及各阶段拒掉的数量（约 3,100 条和 1,278 条）。**必读。**"
+  },
+  {
+   "id": "s15",
+   "page": 18,
+   "title": "附录 A.5 Domain Skill Files",
+   "from": "Each application domain ships with a SKILL.md document loaded by",
+   "summary": "每个应用的领域知识文件，含苦涩教训清单。想知道如何把人工经验固化进流水线的读，具体库用法可以跳过。"
+  },
+  {
+   "id": "s16",
+   "page": 25,
+   "title": "附录 B.3 Unified State API",
+   "from": "Every mock implements a four-endpoint state API",
+   "summary": "mock 的四个状态接口、会话隔离和 diff 计算规则、reward 的标准写法。做类似状态接口的读。"
+  },
+  {
+   "id": "s17",
+   "page": 26,
+   "title": "附录 B.4 Multi-Agent Mock Synthesis",
+   "from": "The Plan Agent is responsible for understanding the target application before",
+   "summary": "Plan、Dev、Web 三个 agent 的产物、优先级和收敛条件，以及 Slack、Jira、Salesforce 三个案例。想复现 mock 流水线的读，其余可跳过。"
+  },
+  {
+   "id": "s18",
+   "page": 68,
+   "title": "附录 E.3 Reward Hacking Cases",
+   "from": "We illustrate three categories of reward-hacking failure that",
+   "summary": "早期原型里 Discriminator 能读 Generator 脚本时写出的偷懒 reward 例子，及后面一轮迭代的真实记录。**必读。**"
+  },
+  {
+   "id": "s19",
+   "page": 73,
+   "title": "附录 F.2 Generation Cost",
+   "from": "Aggregating across the four LLM-driven pipeline stages",
+   "summary": "单条数据的成本：LLM 约 0.11 美元，虚拟机约 0.32 美元，及各步耗时。做预算的读。"
+  },
+  {
+   "id": "s20",
+   "page": 78,
+   "title": "附录 G.4 Discriminator Prompt",
+   "from": "is the load-bearing component of the information barrier",
+   "summary": "写 reward 一方的 prompt 原文，含只给任务引入的变化计分的规则。**必读，可直接复用。**"
+  },
+  {
+   "id": "s21",
+   "page": 80,
+   "title": "附录 G.6 Filter Critic Prompt",
+   "from": "The dataset-level filter is a single-pass critic with the conservative-by-default",
+   "summary": "最终筛选 critic 的 prompt 原文，含拒绝清单和只能改指令的限制。可直接改成自己的审查 prompt。"
+  }
+ ],
+ "ver": "v2"
+}

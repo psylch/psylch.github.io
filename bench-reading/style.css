@@ -1,0 +1,196 @@
+:root {
+  --paper: #f1f2ec; --paper-hi: #f8f8f3; --paper-lo: #e6e8df; --ink: #1a1b15; --ink-2: #3f4236; --ink-3: #6a6d60;
+  --hair: rgba(38, 40, 31, .14); --rouge: #9a2f47;
+  --c-task: #efc02f; --c-verifier: #5fb46a; --c-data: #5f9ad6; --c-result: #e88a43; --c-limit: #d0668a;
+  --serif: "Cormorant Garamond", "Noto Serif SC", "Songti SC", serif;
+  --song: "Noto Serif SC", "Songti SC", "Cormorant Garamond", serif;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body { background: var(--paper); color: var(--ink); font-family: var(--song); font-size: 14.5px; line-height: 1.7; font-weight: 500; }
+a { color: var(--rouge); text-decoration: none; }
+a:hover { text-decoration: underline; text-underline-offset: 3px; }
+b, strong { font-weight: 700; color: #0c0d08; }
+.lab { font-size: 12px; letter-spacing: .2em; color: var(--ink-2); font-weight: 600; }
+
+/* ---------- 顶栏 ---------- */
+.bar { height: 44px; display: flex; align-items: baseline; gap: 18px; padding: 12px 20px 0; white-space: nowrap; font-size: 13px; color: var(--ink); }
+.bar .title { font-family: var(--serif); font-weight: 600; font-size: 19px; color: var(--ink); letter-spacing: .01em; }
+.bar .meta { color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; }
+.bar .sp { flex: 1; }
+.bar a { color: var(--ink-2); }
+.chip { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; margin-left: 12px; transition: opacity .2s; }
+.chip i { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+.chip.off { opacity: .3; }
+#keyonly { color: var(--ink-3); } #keyonly.on-key { color: var(--rouge); }
+#pageind { font-family: var(--serif); font-style: italic; font-size: 16px; color: var(--ink-3); min-width: 52px; text-align: right; }
+
+/* ---------- 阅读页双栏 ---------- */
+.reader { display: grid; grid-template-columns: minmax(0, 57fr) minmax(360px, 43fr); height: calc(100% - 44px); }
+#pdf { overflow-y: auto; padding: 4px 0 60px; position: relative; }
+#pdf.over-mark { cursor: pointer; } #pdf.over-mark .textLayer span { cursor: pointer; }
+#side { overflow-y: auto; padding: 4px 28px 80px 20px; }
+
+.page { position: relative; margin: 0 auto 14px; background: #fff; box-shadow: 0 0 0 1px rgba(38, 40, 31, .1), 0 6px 22px -10px rgba(38, 40, 31, .3); }
+.page canvas { display: block; width: 100%; height: 100%; }
+.page .pno { position: absolute; left: 0; top: 2px; transform: translateX(-130%); font: italic 15px var(--serif); color: var(--ink-3); }
+.hl, .page .textLayer { position: absolute; inset: 0; }
+.hl { pointer-events: none; }
+.mark { position: absolute; mix-blend-mode: multiply; border-radius: 1px; opacity: .5; background: var(--mc); transition: opacity .2s; }
+.mark.key { opacity: .75; box-shadow: 0 1.5px 0 0 color-mix(in srgb, var(--mc) 70%, #000); }
+.mark.hot { opacity: .9; }
+.mark.flash { animation: flash 1.4s ease-out; }
+@keyframes flash { 0%, 35% { opacity: 1; box-shadow: 0 0 0 3px color-mix(in srgb, var(--mc) 55%, transparent); } }
+.pin { position: absolute; left: 6px; font: italic 15px/1 var(--serif); color: var(--ink-2); cursor: pointer; pointer-events: auto; z-index: 5; padding: 0 2px; display: flex; align-items: center; gap: 4px; }
+.pin::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--mc); }
+.pin.key { color: var(--rouge); }
+.pin:hover { color: var(--ink); }
+.hide { display: none !important; }
+[data-cat="task"] { --mc: var(--c-task); } [data-cat="verifier"] { --mc: var(--c-verifier); }
+[data-cat="data"] { --mc: var(--c-data); } [data-cat="result"] { --mc: var(--c-result); } [data-cat="limit"] { --mc: var(--c-limit); }
+
+/* ---------- 右栏 ---------- */
+.q { font-size: 17px; font-weight: 600; margin: 2px 0 14px; line-height: 1.55; }
+.q .lab { display: block; margin-bottom: 2px; }
+.sec { margin: 0 0 16px; }
+.sec h3 { margin: 0 0 3px; }
+.sec ol, .sec ul { margin: 0; padding-left: 1.3em; } .sec li { margin: 1px 0; padding-left: 2px; }
+.sec li::marker { color: var(--ink-3); font-family: var(--serif); font-style: italic; }
+.sec.infer { color: var(--ink); } .sec.infer h3 { color: var(--rouge); }
+.rf { display: grid; grid-template-columns: auto 1fr; gap: 0 14px; }
+.rf a { cursor: pointer; } .rf span { color: var(--ink-2); }
+.pg { margin: 20px 0 2px; padding: 4px 0; position: sticky; top: -4px; background: linear-gradient(var(--paper) 70%, transparent); z-index: 2; transition: color .2s; }
+.pg.cur { color: var(--rouge); }
+.note { display: grid; grid-template-columns: 30px 1fr; padding: 5px 10px 5px 8px; margin: 0 -10px 0 -8px; cursor: pointer; border-radius: 3px; transition: background .15s; }
+.note:hover, .note.hot { background: #fbfbf7; }
+.note.active { background: #fdfdfa; box-shadow: inset 3px 0 0 var(--mc), 0 1px 6px -2px rgba(38,40,31,.25); }
+.note .num { font: italic 600 16px/1.5 var(--serif); color: var(--ink-2); display: flex; align-items: baseline; gap: 4px; }
+.note .num::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--mc); flex: none; transform: translateY(-1px); }
+.note.key .num { color: var(--rouge); font-weight: 600; }
+.note .inf { grid-column: 2; font-size: 13.5px; color: var(--ink-2); }
+.note .inf::before { content: "推断"; font-size: 11px; letter-spacing: .2em; color: var(--rouge); margin-right: 8px; }
+
+/* ---------- 书架页 ---------- */
+.shelf { max-width: 1040px; margin: 0 auto; padding: 36px 28px 80px; }
+.shelf h1 { font: 600 30px var(--serif); margin: 0; letter-spacing: .02em; } .shelf h1 em { font-weight: 400; font-size: 20px; color: var(--ink-3); margin-left: 12px; }
+.shelf .sub { color: var(--ink-2); margin: 6px 0 8px; max-width: 46em; }
+.shelf h2 { margin: 26px 0 4px; }
+.rows { display: grid; grid-template-columns: 200px 1fr 64px; }
+.rows > * { padding: 4px 12px 4px 0; }
+.rows .t { font-weight: 600; font-family: var(--serif); font-size: 16px; color: var(--ink); } a.t { color: var(--rouge); }
+.rows .q2 { color: var(--ink-2); } .rows .st { font-size: 11.5px; letter-spacing: .15em; color: var(--ink-3); text-align: right; padding-right: 0; }
+.rows .st.ok { color: var(--rouge); }
+
+/* ---------- 小节总结 ---------- */
+.ssum { margin: 10px -10px 6px -8px; padding: 7px 12px 8px 12px; background: var(--paper-lo); border-radius: 3px; cursor: pointer; color: var(--ink); }
+.ssum .st { display: block; font: 600 15.5px/1.5 var(--serif); color: var(--rouge); letter-spacing: .01em; }
+.ssum:hover, .ssum.active { background: #dfe2d6; }
+.spin { position: absolute; left: 4px; font: 600 15px/1 var(--serif); color: var(--rouge); cursor: pointer; pointer-events: auto; z-index: 5; padding: 0 3px; }
+.spin.flash { animation: sflash 1.4s ease-out; }
+@keyframes sflash { 0%, 40% { background: var(--rouge); color: #fff; border-radius: 2px; } }
+
+/* ---------- 总览页 ---------- */
+html:has(.ov), body:has(.ov) { height: auto; }
+.ov { max-width: 1320px; }
+.ov a[r], .ov .cmp a { white-space: nowrap; font-size: 12.5px; border-bottom: 1px solid color-mix(in srgb, var(--rouge) 35%, transparent); }
+.ov a[r]:hover, .ov .cmp a:hover { text-decoration: none; border-bottom-color: var(--rouge); }
+.ov a[r] + a[r] { margin-left: 6px; }
+.ov ol, .ov ul { margin: 0; padding-left: 1.3em; }
+.ov li { margin: 3px 0; }
+.ov li::marker { color: var(--ink-3); font-family: var(--serif); font-style: italic; }
+.ov .top { columns: 2; column-gap: 40px; } .ov .top li { break-inside: avoid; }
+.ov .two { display: grid; grid-template-columns: 1fr 1fr; gap: 0 40px; }
+.ov .adv { columns: 2; column-gap: 40px; } .ov .adv li { break-inside: avoid; }
+.ov li.inf { list-style: none; margin-left: -1.3em; color: var(--ink-2); margin-top: 6px; }
+.ov li.inf span, .ov .rg { font-size: 11px; letter-spacing: .2em; color: var(--rouge); margin-right: 8px; font-weight: 600; }
+.ov .rg { margin-left: 10px; }
+.ov .route { line-height: 2.1; } .ov .route a[r] { font-size: 13.5px; margin: 0 2px; }
+.cmp { width: 100%; border-collapse: collapse; font-size: 13.5px; line-height: 1.5; }
+.cmp th { text-align: left; font-weight: 600; font-size: 11.5px; letter-spacing: .15em; color: var(--ink-2); padding: 4px 14px 6px 0; }
+.cmp td { padding: 5px 14px 5px 0; vertical-align: top; }
+.cmp tbody tr:nth-child(odd) { background: color-mix(in srgb, var(--paper-lo) 55%, transparent); }
+.cmp td:first-child { padding-left: 8px; } .cmp th:first-child { padding-left: 8px; }
+.cmp td:first-child a { font: 600 15px var(--serif); border: 0; }
+.ov .grp { font-size: 13px; font-weight: 600; color: var(--ink-2); margin: 12px 0 2px; }
+@media (max-width: 900px) { .ov .two { grid-template-columns: 1fr; } .ov .top, .ov .adv { columns: 1; } }
+
+/* ============ 版式依据：明代闵刻朱墨套印本（如《唐诗归》） ============
+   从书影里读出的四条规矩：
+   1. 一页只有一道版框，框的是原文；框内不画界行，靠留白和缩进分段。
+   2. 批语在框外，不加任何框线，字比正文小，用朱色。
+   3. 朱色只占很小的面积：批语、圈点、旁线。正文和框线一律是墨。
+   4. 标题不靠线，靠一个小圆圈「○」和缩进。 */
+:root { --frame: #1a1b15; }
+
+/* --- 总览页 --- */
+body:has(.ov) { padding: 30px 40px 70px; }
+.mei { max-width: 1280px; margin: 0 auto 10px; display: flex; gap: 56px; padding: 0 42px; color: var(--rouge); font-size: 12.5px; line-height: 1.65; }
+.mei p { margin: 0; max-width: 25em; }
+.ov { max-width: 1280px; border: 1.5px solid var(--frame); padding: 30px 42px 36px; background: none; }
+.ov h1 { display: flex; align-items: center; margin-bottom: 4px; }
+.yin { margin-left: auto; width: 34px; height: 34px; display: grid; grid-template-columns: 1fr 1fr; place-items: center; background: var(--rouge); color: var(--paper); font: 700 12px/1 var(--song); border-radius: 3px; padding: 3px; opacity: .92; }
+.ov h2.lab { margin: 26px 0 6px; font-size: 15.5px; letter-spacing: .06em; font-weight: 700; color: var(--ink); }
+.ov h2.lab::before { content: "○"; margin-right: 8px; font-weight: 400; color: var(--ink-2); }
+.ov h1 + h2.lab { margin-top: 14px; }
+.ov .top, .ov .adv { column-gap: 64px; column-rule: 0; }
+.ov .two { gap: 0 64px; }
+.ov .two h2.lab { margin-top: 26px; }
+.ov a[r] { color: var(--rouge); font-size: 11.5px; border: 0; margin-left: 5px; letter-spacing: .01em; }
+.ov a[r] + a[r] { margin-left: 7px; }
+.ov a[r]:hover { text-decoration: underline; text-underline-offset: 3px; }
+.ov .route a[r] { font-size: 13.5px; }
+.ov li.inf span, .ov .rg { color: var(--rouge); font-size: 12px; font-weight: 700; letter-spacing: .1em; margin-right: 8px; }
+.ov .rg { margin-left: 10px; font-weight: 500; }
+.cmp { border-top: 1px solid var(--frame); border-bottom: 1px solid var(--frame); margin-top: 8px; }
+.cmp thead th { border-bottom: 1px solid var(--hair); padding-top: 7px; color: var(--ink-2); }
+.cmp tbody tr:nth-child(odd) { background: none; }
+.cmp td { padding: 4px 14px 4px 0; }
+.cmp td:first-child, .cmp th:first-child { padding-left: 0; }
+.ov .cmp a { border: 0; color: var(--ink); }
+.ov .cmp a:hover { color: var(--rouge); }
+.ov .grp::before { content: "　"; }
+.ov .rows .t { font-size: 15.5px; } .ov a.t { color: var(--ink); } .ov a.t:hover { color: var(--rouge); }
+.ov .rows .st.ok { color: var(--ink-3); }
+
+/* --- 阅读页：框住的是原文，批语在框外 --- */
+.bar { border: 0; background: var(--paper); }
+#pdf { background: var(--paper); }
+.page { box-shadow: none; outline: 1.5px solid var(--frame); margin-bottom: 18px; }
+#side { border: 0; background: var(--paper); padding-left: 26px; }
+.q, .sec { border: 0; }
+.pg { display: block; background: linear-gradient(var(--paper) 75%, transparent); color: var(--ink-2); font-weight: 600; margin-top: 22px; }
+.pg::before { content: "○"; margin-right: 8px; font-weight: 400; }
+.pg.cur { color: var(--rouge); }
+/* 小节总结 = 朱笔总评：整段朱色，不加框 */
+.ssum { background: none; border: 0; border-radius: 3px; margin: 8px -8px 6px -8px; padding: 4px 8px 5px; color: var(--rouge); }
+.ssum b { color: #7c1f35; }
+.ssum .st { color: var(--rouge); font-weight: 700; }
+.ssum:hover, .ssum.active { background: color-mix(in srgb, var(--rouge) 8%, transparent); }
+.note { border: 0; border-radius: 3px; }
+.note:hover, .note.hot { background: #fafaf6; }
+.note.active { background: #fcfcf9; box-shadow: inset 3px 0 0 var(--mc); outline: 0; }
+.note .inf::before { content: "按"; color: var(--rouge); font-weight: 700; letter-spacing: 0; margin-right: 6px; }
+.spin { color: var(--rouge); background: none; }
+.sec.infer h3 { color: var(--rouge); }
+
+/* --- 阅读页顶栏：左半是书眉（书名、页码），右半是凡例（哪种颜色标什么） --- */
+.bar { display: grid; grid-template-columns: minmax(0, 57fr) minmax(360px, 43fr); gap: 0; height: 44px; padding: 0; align-items: end; }
+.bar .bl, .bar .br { display: flex; align-items: baseline; gap: 14px; padding: 0 20px 7px; min-width: 0; }
+.bar .br { padding-left: 26px; padding-right: 28px; gap: 4px; }
+.bar .back { color: var(--ink-2); font-size: 12.5px; } .bar .back::before { content: "‹ "; }
+.bar .title { font-size: 20px; }
+.bar .meta { font-size: 12px; }
+#pageind { min-width: 0; font-size: 15px; color: var(--ink-2); }
+.bar .fl { font-size: 12.5px; font-weight: 700; letter-spacing: .3em; color: var(--ink); margin-right: 6px; }
+.chip { margin-left: 0; margin-right: 12px; gap: 5px; font-size: 13px; color: var(--ink); }
+/* 色样画成一笔荧光笔，和正文里的高亮是同一个东西 */
+.chip i { width: 18px; height: 11px; border-radius: 1px; opacity: .7; }
+.chip.off { opacity: 1; color: var(--ink-3); text-decoration: line-through; text-decoration-thickness: 1px; }
+.chip.off i { opacity: .18; }
+/* 只看重点：圈点。未选是空圈，选中是朱色实点 */
+#keyonly { color: var(--ink-2); margin-right: 14px; }
+#keyonly::before { content: "○"; margin-right: 3px; }
+#keyonly.on-key { color: var(--rouge); font-weight: 700; } #keyonly.on-key::before { content: "●"; }
+.bar #arxiv { color: var(--ink-2); font: italic 15px var(--serif); }
+.bar #arxiv:hover, .bar .back:hover { color: var(--rouge); text-decoration: none; }
+.reader { height: calc(100% - 44px); margin-top: 0; }

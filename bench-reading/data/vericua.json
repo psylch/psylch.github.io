@@ -1,0 +1,641 @@
+{
+ "id": "vericua",
+ "title": "VeriCUA",
+ "full": "VeriCUA: Verification as Agentic Exploration for Computer-Using Agents",
+ "arxiv": "2610.40578",
+ "pdf": "papers/2610.40578.pdf",
+ "meta": "Google / 香港大学 · 2026-10 · 正文 11 页 + 附录共 29 页",
+ "question": "写不出确定性检查时，verifier 自己当 agent 去取证，怎么做、可靠吗？",
+ "tldr": [
+  "**问题**：被动 judge 只能看到别人递给它的截图，自动生成的检查脚本只能查它猜到的位置。两者都可能漏掉决定性证据，结果是把没保存、只做了一半的运行判成成功（假阳性）。",
+  "**流程**：verifier 先探查环境或录像，再生成「只管终态」的 rubric（每条要求标 hard 或 soft），然后对每条未决要求自己选 GUI 工具（看帧、放大、OCR）或代码工具（读文件、查数据库）取证，最后由一个确定性的 arbiter 按规则合成结论，证据不足时允许弃权。",
+  "**证据纪律**：每个发现必须引用一次真实执行过的读取；agent 自己说「做完了」只算 asserted，不能单独让任何一条要求通过。判成立要有 attested 证据，判不成立要有两个独立探针互相印证。",
+  "**准确率**：在线三个环境上，假阳性率约降到生成式 verifier 的四分之一（ScienceBoard 5.4% 对 21.7%）；离线最难子集 OSReward-Hard 上准确率 70.4%，单次调用 judge 最好只有 65.7%。代价是 token 比单次 judge 高约一个数量级，且在线要有 root 级只读访问。",
+  "**没有 RL 实验**：论文只证明它能当过滤器和打标器，结论里才说「动机是用于数据筛选和 RL」。没有把它的输出接进训练、也没有测对 reward hacking 的抵抗力，这一块是空的。"
+ ],
+ "forUs": [
+  "剪映、UE、Maya、Blender 的任务大多写不出现成的确定性检查，这篇给的是退而求其次的标准件：先把指令拆成只管终态的 rubric，再逐条取证。rubric 的 prompt 原文在附录 F，可以直接拿去改。",
+  "它的 verifier 能用的读取是白名单、只读、执行前后比对哈希。对 UE 来说等价的白名单大概是：读工程文件、读资产元数据、读导出产物的属性，而不是让 verifier 在编辑器里点来点去。动 GUI 的 verifier 会改状态，这一点论文用「从不写环境」回避了。",
+  "我们的轨迹采集如果保留了每步的帧、AX 树和文件变更，就等于离线 verifier 的原料。论文要求每个数据集声明「第 i 帧是动作之前还是之后的画面」，我们的采集格式也该写明这一条，否则取证会错位。",
+  "把它当 reward 用之前要先自己补两个实验：一是弃权率（离线 WebArena 上 23% 的轨迹回落到初判），二是被训练的策略会不会学着去骗 verifier。论文都没测。保守做法是只用它的 success 且 decided 的样本做拒绝采样，弃权的丢掉。",
+  "成本要算进数据预算：离线每条轨迹 15 万到 38 万 token，在线每次约 4 万 token 加约 100 秒。几万条轨迹的量级上，这笔钱不能忽略。"
+ ],
+ "readFirst": [
+  {
+   "label": "图 1 与 §1 流程",
+   "why": "一页看懂：上下文探查、rubric、GUI 或代码取证、arbiter",
+   "note": "n03"
+  },
+  {
+   "label": "§3.4 证据纪律",
+   "why": "attested 与 asserted、met 与 unmet 的判定规则，是可靠性的来源",
+   "note": "n16"
+  },
+  {
+   "label": "附录 A.4 只读保证",
+   "why": "回答「verifier 会不会改环境」",
+   "note": "n33"
+  },
+  {
+   "label": "表 1 在线结果",
+   "why": "假阳性率和弃权后的准确率，核心数据",
+   "note": "n21"
+  },
+  {
+   "label": "§5.5 与附录 C.6",
+   "why": "用 verifier 反过来审官方评测的 gold label",
+   "note": "n42"
+  },
+  {
+   "label": "附录 F.2 prompt",
+   "why": "rubric 和 checker 生成 prompt 原文，可直接借用",
+   "note": "n49"
+  },
+  {
+   "label": "附录 E 局限",
+   "why": "成本、弃权、随机性",
+   "note": "n46"
+  }
+ ],
+ "notes": [
+  {
+   "id": "n01",
+   "page": 1,
+   "cat": "verifier",
+   "from": "VLM judges are restricted to supplied observations",
+   "to": "depend on accessible state",
+   "note": "摘要点出两类老办法各自的盲区：VLM judge 受限于别人递给它的观测，生成式检查脚本受限于它能访问到的状态。VeriCUA 的出发点是让 verifier 自己决定去看什么。"
+  },
+  {
+   "id": "n02",
+   "page": 1,
+   "cat": "verifier",
+   "from": "A trajectory can appear successful even when edits remain unsaved",
+   "to": "fails without a visible warning",
+   "note": "典型假阳性：改动没保存，或操作失败时界面没有任何提示。从这里可以看出，「尝试了什么」和「实际产生了什么效果」要分开判。"
+  },
+  {
+   "id": "n03",
+   "page": 2,
+   "cat": "verifier",
+   "key": true,
+   "from": "The verifier first explores the available context",
+   "to": "rubric of fine-grained requirements",
+   "note": "**流程第一步是先熟悉环境，再写 rubric。** 先探查应用有哪些包、目录、数据库，再把指令拆成可检查的细条。在不熟悉的应用里，这一步决定了后面查的位置对不对。"
+  },
+  {
+   "id": "n04",
+   "page": 2,
+   "cat": "verifier",
+   "from": "A report that the task is complete remains a claim to verify",
+   "note": "agent 自己宣布完成只是一个待核实的断言。很多 judge 被轨迹末尾的「任务已完成」误导，这里是明确不吃这一套的设计立场。"
+  },
+  {
+   "id": "n05",
+   "page": 3,
+   "cat": "data",
+   "from": "Trajectory synthesis pipelines use verifier scores to select",
+   "to": "reinforcement learning relies on automated feedback",
+   "note": "作者把 verifier 的下游用途列成两条：合成轨迹时按分数选样本，持续 RL 时用自动反馈。这是它与训练的全部接口，论文自己没有做这两个下游实验。"
+  },
+  {
+   "id": "n06",
+   "page": 3,
+   "cat": "verifier",
+   "from": "Evidence-first verification separates investigation from validation",
+   "to": "before accepting rubric verdicts",
+   "note": "最接近的前作思路是先调查再核对。VeriCUA 的差别主要在：rubric 在探查环境之后才生成，且在线和离线共用同一流程。"
+  },
+  {
+   "id": "n07",
+   "page": 4,
+   "cat": "verifier",
+   "from": "allowing abstention when the gathered evidence is",
+   "to": "support a decision",
+   "note": "输出有三种：success、fail、abstain。让 verifier 可以说「证据不够」是整套设计里最重要的取舍之一，用覆盖率换精确率。"
+  },
+  {
+   "id": "n08",
+   "page": 4,
+   "cat": "verifier",
+   "from": "records its evidence type and source attributes, assigned by the tool-execution layer",
+   "to": "(the harness)",
+   "note": "证据的类型和来源属性由工具执行层打标，不是 verifier 模型自己写。模型无法给一条证据自封「可靠」，这是防止 verifier 自我说服的一道硬关卡。"
+  },
+  {
+   "id": "n09",
+   "page": 4,
+   "cat": "verifier",
+   "key": true,
+   "from": "Generating requirements without this context can introduce assumptions",
+   "to": "that the application does not expose",
+   "note": "**不看环境就写 rubric，会编出应用里根本不存在的文件或控件。** 这解释了为什么要先探查：rubric 的措辞要落在应用真实暴露的东西上。"
+  },
+  {
+   "id": "n10",
+   "page": 4,
+   "cat": "verifier",
+   "from": "Each hard requirement must be justified by the outcomes",
+   "to": "helps locate evidence",
+   "note": "每条 hard 要求必须来自指令要求的结果；环境信息只负责解释含义和指路。这样探查到的东西不会悄悄变成额外的通过条件。"
+  },
+  {
+   "id": "n11",
+   "page": 5,
+   "cat": "verifier",
+   "from": "This distinction keeps evidence locations from becoming",
+   "to": "conditions for success",
+   "note": "举例：笔记保存到哪个目录是「去哪里找证据」，不是「成功条件」。评测任务时最容易犯的错就是把一种实现路径写成要求，从而冤杀走了别的合法路径的 agent。"
+  },
+  {
+   "id": "n12",
+   "page": 5,
+   "cat": "verifier",
+   "from": "Files, application databases, and stored settings can retain effects",
+   "to": "that the current interface does not show",
+   "note": "三类视图：轨迹（帧、动作、推理）、当前界面（新截图或 UI 层级）、持久化状态（文件、数据库、设置）。第三类能看到界面根本不显示的结果，比如音乐队列只在数据库里。"
+  },
+  {
+   "id": "n13",
+   "page": 5,
+   "cat": "verifier",
+   "from": "a sequence of permitted reads paired with a predicate",
+   "to": "evaluates a requirement",
+   "note": "在线 verifier 不是随便写脚本，而是写 checker：一串被允许的读取，加一个判断谓词。读取由 harness 执行，结构化谓词走受限求值器，视觉或语义的比较交给模型。"
+  },
+  {
+   "id": "n14",
+   "page": 6,
+   "cat": "verifier",
+   "from": "The harness rejects citations that match no executed call",
+   "to": "source attributes to the finding",
+   "note": "每个发现必须引用一次真实执行过的读取，对不上任何执行记录的引用直接拒收。这是针对模型「编造证据」的程序化防线。"
+  },
+  {
+   "id": "n15",
+   "page": 6,
+   "cat": "verifier",
+   "key": true,
+   "from": "Asserted evidence can direct further inspection but cannot alone mark a requirement met",
+   "note": "**asserted 与 attested 的分离是可靠性的核心。** agent 的完成声明和动作之前的帧只算 asserted，能指路但不能单独算通过；动作之后的帧、文件读取、数据库查询才是 attested。"
+  },
+  {
+   "id": "n16",
+   "page": 6,
+   "cat": "verifier",
+   "key": true,
+   "from": "A met status requires attested support, while unmet requires corroborating",
+   "to": "from separate probes",
+   "note": "**不对称的判定规则。** 通过要有 attested 支持；否决要有来自不同探针的互相印证。任何一条 hard 不成立则整体 fail，有未决且无不成立则弃权或兜底。这个聚合是确定性的，改阈值不必重新探查。"
+  },
+  {
+   "id": "n17",
+   "page": 6,
+   "cat": "verifier",
+   "from": "The verifier abstains on unresolved tasks to avoid assigning training or filtering labels",
+   "to": "by the collected evidence",
+   "note": "在线遇到未决任务直接弃权，理由写得很明白：不给训练或过滤贴没有证据支持的标签。这是它面向数据管线的设计，宁缺毋滥。"
+  },
+  {
+   "id": "n18",
+   "page": 7,
+   "cat": "verifier",
+   "from": "VeriCUA audits fixed, time-stamped recordings through multiple paths",
+   "to": "refutations through backward inspection",
+   "note": "离线没有机器可查，改为多条审计路径：一条正向找支持，一条反向找反例。要求每条完成的路径都有 attested 支持才算通过。"
+  },
+  {
+   "id": "n19",
+   "page": 7,
+   "cat": "limit",
+   "from": "the reported configuration uses an initial judgment: a single-pass VLM assessment",
+   "to": "withheld from the audit paths",
+   "note": "离线报告的配置里，没有定论的任务回落到一次性 VLM 初判。所以离线准确率不是纯 agent 取证的成绩，WebArena 上 23% 的轨迹用的是兜底。读离线数字要带着这一点。"
+  },
+  {
+   "id": "n20",
+   "page": 7,
+   "cat": "verifier",
+   "from": "A model-generated evaluator script per task, run once",
+   "to": "binary verdict",
+   "note": "对照组之一：每题让模型写一个脚本，运行一次出结论。这就是「写确定性检查」的自动化版本，是 VeriCUA 在线实验里最强的对手。"
+  },
+  {
+   "id": "n21",
+   "page": 8,
+   "cat": "result",
+   "key": true,
+   "from": "Scripts constructed without context inspection can query incorrect",
+   "to": "state locations",
+   "note": "**在线假阳性率：VeriCUA 7.7%、13.9%、5.4%（AndroidWorld、OSWorld、ScienceBoard），生成式 verifier 为 16.9%、25.9%、21.7%，单次 VLM judge 为 15.4%、27.9%、24.8%。** 代价是只对 70% 到 82% 的任务给结论，其余弃权。"
+  },
+  {
+   "id": "n22",
+   "page": 8,
+   "cat": "result",
+   "from": "Counting abstentions as fail can lower recall without adding false positives",
+   "to": "data curation or reward assignment",
+   "note": "弃权按失败计会拉低召回，但不增加假阳性。ScienceBoard 上 VeriCUA 召回 60.0%，低于生成式 verifier 的 72.5%，换来的是准确率 86.4% 对 76.9%。作者明说这个取向适合保守地挑成功轨迹。"
+  },
+  {
+   "id": "n23",
+   "page": 8,
+   "cat": "result",
+   "from": "On OSReward, its accuracy advantage over",
+   "to": "larger on the hard subset than on the full set",
+   "note": "离线在 OSReward-Hard 上准确率 70.4%，OS-Themis 为 65.7%，TRM 为 57.4%。全集上 VeriCUA 为 87.2%，差距更小。简单样本单次 judge 就够用，主动取证的价值集中在难样本。"
+  },
+  {
+   "id": "n24",
+   "page": 9,
+   "cat": "result",
+   "key": true,
+   "from": "adding code-based state checks to GUI inspection",
+   "to": "leaving false positives unchanged",
+   "note": "**加上代码读取，AndroidWorld 上召回从 57.6% 升到 87.9%，decided 比例从 45% 升到 82%，假阳性都是 41 条里的 3 条。** 每一个新增的正确判定都有文件或应用存储的读取撑着。GUI 看不到的东西，代码能看到。"
+  },
+  {
+   "id": "n25",
+   "page": 9,
+   "cat": "result",
+   "from": "Trees alone yield the highest decision rate and lowest cost",
+   "to": "at lower accuracy",
+   "note": "WebArena 上只给 AX 树：decided 85%、17.8 万 token、准确率 76.7%；只给截图：decided 33%、23.4 万 token；两者都给：decided 75%、准确率 80.0%。结构化观测便宜且覆盖广，但会丢视觉信息。"
+  },
+  {
+   "id": "n26",
+   "page": 9,
+   "cat": "result",
+   "from": "Adding the visual pass improves agreement and decision rate further",
+   "to": "both reaching 87%",
+   "note": "三次默认只用代码和结构化状态的 pass 合并后只有小幅提升，再加一次带视觉检查的 pass 才升到 87%。不同证据通道比重复同一配置有用。"
+  },
+  {
+   "id": "n27",
+   "page": 10,
+   "cat": "result",
+   "from": "VeriCUA rejects about 80% of these reports",
+   "to": "outperforms both baselines in each environment",
+   "note": "对「agent 声称完成但实际没完成」的样本，VeriCUA 约拒绝 80%。样本量很小（AndroidWorld 14 条、OSWorld 74 条、ScienceBoard 40 条），这些是在数据策展中最需要拦住的那类。"
+  },
+  {
+   "id": "n28",
+   "page": 10,
+   "cat": "result",
+   "from": "We also compare accuracy under a matched verification budget",
+   "to": "an exploration limit to VeriCUA",
+   "note": "等预算比较：OSReward-Hard 上 TRM 重复 10 次为 58.5%，CUAJudge 为 64.5%，VeriCUA 为 68.7%。多采样同一个单次 judge 追不上主动取证。"
+  },
+  {
+   "id": "n29",
+   "page": 11,
+   "cat": "result",
+   "from": "Replacing the flash backbone with the",
+   "to": "pro backbone improves VeriCUA's accuracy",
+   "note": "OSReward-Hard 上换成 pro，VeriCUA 准确率升 2.7 点，CUAJudge 反而降 0.7 点。附录 C.7 里更强的单次调用模型（Opus 4.8、GPT-5.5）在全集上的准确率（89.5% 到 89.7%）高于 VeriCUA 用 flash 的 87.2%。",
+   "infer": "这说明框架的收益有一部分是在补弱模型，模型变强后差距可能收窄。论文没有用强模型做 VeriCUA 全量对照。"
+  },
+  {
+   "id": "n30",
+   "page": 11,
+   "cat": "result",
+   "from": "Selection raises failure precision on each benchmark while retaining fewer",
+   "to": "initial failure judgments",
+   "note": "只保留探查后仍判 fail 的样本，失败精确率上升：WebArena 88.4% 到 92.0%，OSReward 全集 83.8% 到 92.7%。代价是只保留约三成到五成的初判失败。适合当高置信度的负样本池。"
+  },
+  {
+   "id": "n31",
+   "page": 11,
+   "cat": "limit",
+   "key": true,
+   "from": "motivate its use in data curation and reinforcement learning",
+   "note": "**结论只说「动机是用于数据筛选和 RL」，全文没有一次训练实验。** 它能证明自己和 gold 的一致率，不能证明接成 reward 后训练会变好，也没测策略会不会学着欺骗它。"
+  },
+  {
+   "id": "n32",
+   "page": 16,
+   "cat": "task",
+   "from": "A new source enters as exactly",
+   "to": "initial view for the cold-start judgment",
+   "note": "扩展到新平台只需三样：读取动词、证据类型及 attested 或 asserted 分类、一个冷启动初判的视图。下游阶段只吃证据类型，不用改。想接 UE 或 Maya 就是补这三样。"
+  },
+  {
+   "id": "n33",
+   "page": 17,
+   "cat": "verifier",
+   "key": true,
+   "from": "On a machine the verbs come from a fixed allowlist",
+   "to": "before and after execution",
+   "note": "**回答「会不会改环境」：不会，而且做了校验。** 动词来自固定白名单，能夹带 shell 控制符的参数被拒绝，并比对执行前后持久目标的摘要。离线是纯函数读文件，天然只读。"
+  },
+  {
+   "id": "n34",
+   "page": 17,
+   "cat": "task",
+   "from": "verification runs against that snapshot, so any",
+   "to": "the identical end state",
+   "note": "每局结束后保存设备快照，所有验证 pass 都在同一份终态上跑，可以重放。执行前还要记一份「前态锚点」，用于判断「相对初始的变化」。"
+  },
+  {
+   "id": "n35",
+   "page": 17,
+   "cat": "limit",
+   "from": "The harness has root access over adb, so every store the",
+   "to": "evaluator can read is readable by the verifier",
+   "note": "在线的前提是 root 级只读访问，官方 evaluator 能读到的存储它都能读到。在没法拿到应用内部存储的专业软件里，这个前提不一定成立。"
+  },
+  {
+   "id": "n36",
+   "page": 17,
+   "cat": "data",
+   "from": "declared per dataset and determines the post-effect and pre-action",
+   "to": "evidence types",
+   "note": "每个数据集要声明帧是动作之前还是之后的画面，这决定它算 attested 还是 asserted。同一张图在不同采集约定下证据等级不同。"
+  },
+  {
+   "id": "n37",
+   "page": 18,
+   "cat": "limit",
+   "from": "The multi-pass suite keeps every snapshot on which the agent claimed completion",
+   "to": "any pass abstained",
+   "note": "多 pass 实验用的是专门挑出来的难样本：agent 声称完成但 gold 说失败，或各配置意见不一致。它不代表真实分布，87% 这类数字不能直接外推。"
+  },
+  {
+   "id": "n38",
+   "page": 18,
+   "cat": "limit",
+   "from": "It does not receive the trajectory, the results of context inspection",
+   "to": "pre-state anchor",
+   "note": "对照的生成式 verifier 拿不到轨迹、环境探查结果和前态锚点。也就是说对比里 VeriCUA 比它多拿了信息，差距不全来自「主动探索」本身。"
+  },
+  {
+   "id": "n39",
+   "page": 18,
+   "cat": "limit",
+   "from": "CUAJudge collapses the original four-stage pipeline into one call",
+   "note": "离线基线被简化过：CUAJudge 从四阶段压成一次调用，OS-Themis 的多 agent 压成两次且预算减半。作者报告恢复原预算变化不大，但对比不是各方法的原版。"
+  },
+  {
+   "id": "n40",
+   "page": 19,
+   "cat": "result",
+   "from": "Figure C.1 shows which arbiter rules carry the result",
+   "to": "number of hard requirements",
+   "note": "episode 召回随 hard 要求个数增加而下降，因为是合取：每条要求 69% 到 82% 被认定，要求越多整体通过越难。含多个子条件的长任务会被系统性低估成功率。"
+  },
+  {
+   "id": "n41",
+   "page": 23,
+   "cat": "data",
+   "from": "One verifier pass takes about 100 seconds per episode",
+   "to": "predicate evaluation about a third",
+   "note": "在线每次约 100 秒，一半时间花在合成 checker 上。token：在线约 3.9 万对生成式 verifier 的 1.6 万；离线 OSReward 每条 34.5 万到 37.8 万，三个基线 judge 合计只有 3.3 万到 3.5 万。"
+  },
+  {
+   "id": "n42",
+   "page": 24,
+   "cat": "result",
+   "key": true,
+   "from": "Of the 81 flags, 51 are confirmed, 20 refuted",
+   "to": "unsure kept in the denominator",
+   "note": "**81 条冲突里 51 条被盲审员支持 VeriCUA、20 条支持 gold、10 条不确定。** 在线 OSWorld 的 28 条假阳性里约 18 条其实是官方 evaluator 判错。所谓假阳性有相当一部分是 gold 的问题，评测 bench 要定期审标签。"
+  },
+  {
+   "id": "n43",
+   "page": 24,
+   "cat": "result",
+   "from": "A false completion claim refuted from the media store",
+   "to": "both baselines certified the run",
+   "note": "典型案例：要求录一个视频，agent 录了三个。VLM judge 只看到空闲相机，生成脚本找到第一个视频就返回，都判成功；VeriCUA 查媒体库计数，发现多了三条。「恰好一个」这类数量约束需要主动计数。"
+  },
+  {
+   "id": "n44",
+   "page": 25,
+   "cat": "result",
+   "from": "A success that only the app's store can attest",
+   "to": "while both baselines fail the run",
+   "note": "反方向的案例：播放队列只存在于应用数据库，最终界面里看不到。两个基线都判失败，VeriCUA 读数据库确认三首歌按顺序在队列里。说明主动取证不只是更严，也能减少假阴性。"
+  },
+  {
+   "id": "n45",
+   "page": 26,
+   "cat": "result",
+   "from": "A long desktop recording that every judge passes on the finished export",
+   "to": "finds the text at the top rather than centered",
+   "note": "离线案例：幻灯片文字应居中，实际在顶部。所有 judge 看到导出完成就判成功，VeriCUA 回到第 66 步的预览帧才发现。这类错误发生在过程中间帧，只看最后几帧的 judge 抓不到。"
+  },
+  {
+   "id": "n46",
+   "page": 27,
+   "cat": "limit",
+   "key": true,
+   "from": "A verification pass issues tens of tool calls and model calls per trajectory",
+   "to": "an order of magnitude more than a single-call judge",
+   "note": "**成本局限：每条轨迹几十次工具和模型调用，比单次 judge 高约一个数量级。** 作者自己说它更适合过滤和打 reward 标签，不适合交互场景。"
+  },
+  {
+   "id": "n47",
+   "page": 27,
+   "cat": "limit",
+   "from": "On recorded trajectories it abstains wherever the recording holds no evidence",
+   "to": "environments that can be instrumented",
+   "note": "离线遇到录像里没有证据的要求就弃权，覆盖率有上限；在线能解决，但只对能被仪器化的环境成立。采集时没留下的信息，事后任何 verifier 都补不回来。"
+  },
+  {
+   "id": "n48",
+   "page": 27,
+   "cat": "limit",
+   "from": "A stochastic verifier also needs its draw-to-draw spread reported",
+   "to": "beside every comparison",
+   "note": "verifier 本身有随机性，同一条轨迹多次判可能不同。作者承认比较时必须同时报告多次抽样的波动。表 C.5 里单次抽样一致率在 75.7% 到 79.1% 之间。"
+  },
+  {
+   "id": "n49",
+   "page": 29,
+   "cat": "verifier",
+   "key": true,
+   "from": "means exactly one new video was created",
+   "to": "not at least one",
+   "note": "**在线 rubric 生成 prompt 里最值钱的一条：数量按精确值处理，并对比回合开始时的新增物。** 同时禁止写死平台编码、存储位置和指令没提的「卫生要求」。这些规则直接对应 bench 里常见的误判来源。"
+  },
+  {
+   "id": "n50",
+   "page": 29,
+   "cat": "verifier",
+   "from": "A checker is DATA, not a script: a plan of read-only getter calls",
+   "to": "one predicate over their outputs",
+   "note": "checker 是数据而非脚本，由 harness 解释执行。每条 hard 要求至少给两个走不同路径的 checker。把「生成代码」收窄成「生成计划」，是为了让 verifier 不能顺手改环境。"
+  }
+ ],
+ "sections": [
+  {
+   "id": "s01",
+   "page": 1,
+   "title": "摘要",
+   "from": "Building and scaling computer-using agents (CUAs) across desktop",
+   "summary": "一页讲完动机：VLM judge 受限于给定观测，生成脚本受限于可访问状态。方案是先探查环境、建 rubric，再选 GUI 或代码取证。可当导读读一遍。"
+  },
+  {
+   "id": "s02",
+   "page": 1,
+   "title": "§1 Introduction",
+   "from": "Vision-language models (VLMs) have enabled computer-using agents",
+   "summary": "说明为什么「尝试了」不等于「做成了」，并划出在线（查机器状态）与离线（查留存轨迹）两种场景。动机部分，读前两段即可。"
+  },
+  {
+   "id": "s03",
+   "page": 3,
+   "title": "§2 Related Work",
+   "from": "Computer-using agents are evaluated on web, mobile, and desktop tasks",
+   "summary": "梳理 CUA bench、VLM judge、生成式 verifier、rubric 型 reward 模型和 agentic 取证几条线。想找对照方法的名字（TRM、CUAJudge、OS-Themis 等）时再看，其余可跳过。"
+  },
+  {
+   "id": "s04",
+   "page": 4,
+   "title": "§3.1 Verification as Active Evidence Gathering",
+   "from": "VeriCUA begins after this attempt ends and assesses whether the execution",
+   "summary": "**必读**。定义输出为 success、fail、abstain 三值，以及流程四步：上下文探查、rubric 合成、主动取证、规则裁决。"
+  },
+  {
+   "id": "s05",
+   "page": 4,
+   "title": "§3.2 Environment-Aware Rubric Synthesis",
+   "from": "An instruction specifies the requested result but may leave its application-specific",
+   "summary": "**必读**。rubric 必须在看过环境之后再写，hard 要求只能来自指令，环境信息只用来指路。这是避免把实现路径写成通过条件的关键。"
+  },
+  {
+   "id": "s06",
+   "page": 5,
+   "title": "§3.3 Adaptive Hybrid Action Space",
+   "from": "The action space connects the rubric to the sources that can answer",
+   "summary": "把证据源分成轨迹、当前界面、持久化状态三类，并介绍在线 verifier 写 checker（读取加谓词）的做法。值得细读，尤其是图 2。"
+  },
+  {
+   "id": "s07",
+   "page": 6,
+   "title": "§3.4 Evidence Discipline",
+   "from": "VeriCUA links each finding to an executed read, then applies source",
+   "summary": "**必读**。全文可靠性的来源：引用必须对应真实执行、asserted 与 attested 分开、通过需 attested 支持、否决需独立探针互证。"
+  },
+  {
+   "id": "s08",
+   "page": 6,
+   "title": "§3.5 Online and Offline Instantiations",
+   "from": "Online and offline verification share the same workflow over the sources",
+   "summary": "说明在线未决则弃权、离线用多路径正反向审计并以一次性 VLM 初判兜底。读它才知道离线数字里含兜底。"
+  },
+  {
+   "id": "s09",
+   "page": 7,
+   "title": "§4.1 Experimental Setup",
+   "from": "In online environments, we run AndroidWorld",
+   "summary": "列出评测集（AndroidWorld、OSWorld、ScienceBoard、WebArena、OSReward）、基线和指标，所有方法用同一个 flash 模型。看 gold 来源和弃权计为 fail 的约定即可。"
+  },
+  {
+   "id": "s10",
+   "page": 7,
+   "title": "§4.2 Online Verification",
+   "from": "Across the three online environments, VeriCUA has the highest accuracy and lowest",
+   "summary": "在线假阳性率降到生成式 verifier 的约四分之一，代价是只对 70% 到 82% 的任务给结论。**必读**，表 1 是核心数据。"
+  },
+  {
+   "id": "s11",
+   "page": 8,
+   "title": "§4.3 Offline Verification",
+   "from": "In offline verification, VeriCUA has the highest accuracy and balanced accuracy",
+   "summary": "离线准确率全面领先，优势在难子集 OSReward-Hard 上更大；录像里没有证据时回落到初判（WebArena 上 23%）。看难子集的结论即可。"
+  },
+  {
+   "id": "s12",
+   "page": 9,
+   "title": "§5.1 GUI Versus Hybrid Action Space",
+   "from": "On online AndroidWorld, adding code-based state checks to GUI inspection",
+   "summary": "加代码读取后召回和 decided 比例大幅上升，假阳性不变。回答了「为什么 GUI 不够」，篇幅短，值得读。"
+  },
+  {
+   "id": "s13",
+   "page": 9,
+   "title": "§5.2 The Effect Of Observation",
+   "from": "On WebArena, adding a11ytrees to screenshots raises",
+   "summary": "AX 树提高 decided 比例并降低成本，但只给树会损失一些准确率。对我们的采集格式有参考价值。"
+  },
+  {
+   "id": "s14",
+   "page": 9,
+   "title": "§5.3 Test-Time Exploration",
+   "from": "On the multi-pass AndroidWorld suite, three passes use the default",
+   "summary": "多 pass 合并，加一次视觉 pass 比重复默认配置有效；约 80% 的虚假完成声明被拒绝。注意多 pass 用的是挑出来的难样本。"
+  },
+  {
+   "id": "s15",
+   "page": 11,
+   "title": "§5.4 Gains From A Stronger Backbone",
+   "from": "Replacing the flash backbone with the",
+   "summary": "换 pro 模型后 VeriCUA 小幅提升，其他 judge 变化更小甚至为负。篇幅很短，可跳过。"
+  },
+  {
+   "id": "s16",
+   "page": 11,
+   "title": "§5.5 Confident Failures and Gold-Label Audit",
+   "from": "Disagreements can also identify suspected errors in the reference labels",
+   "summary": "把 verifier 当成高置信度失败过滤器和 gold 标签审计工具：盲审员在 63% 的冲突样本上支持 VeriCUA。**必读**，对审我们自己的评测标签有直接价值。"
+  },
+  {
+   "id": "s17",
+   "page": 11,
+   "title": "§6 Conclusion",
+   "from": "We presented VeriCUA, a platform-agnostic framework for verifying computer-using agents",
+   "summary": "小结，并在最后一句提到用于数据筛选和 RL 的动机。注意全文没有训练实验。可跳过。"
+  },
+  {
+   "id": "s18",
+   "page": 16,
+   "title": "附录 A.2 Action Space and Evidence Types",
+   "from": "Table A.2 lists the verbs by state source and modality",
+   "summary": "列出全部取证动词、每个动词盖什么证据类型，以及在线 17 个只读读取的持久或易失标记。想复刻工具清单时必读。"
+  },
+  {
+   "id": "s19",
+   "page": 17,
+   "title": "附录 A.4–A.6 只读保证、环境适配、录像处理",
+   "from": "On recordings the read-only property is structural",
+   "summary": "**必读** A.4：动词白名单、拒绝夹带 shell 的参数、执行前后比对摘要，说明 verifier 不改环境。A.5 讲快照与前态锚点，A.6 讲帧语义与 AX 树压缩。"
+  },
+  {
+   "id": "s20",
+   "page": 18,
+   "title": "附录 B.2 Baseline Implementations",
+   "from": "TRM scores the trajectory from 1 to 5 in a single call",
+   "summary": "说明基线怎样被简化、拿到什么输入。读它才能判断对比公平性（生成式 verifier 拿不到探查结果）。"
+  },
+  {
+   "id": "s21",
+   "page": 23,
+   "title": "附录 C.5 Computational Cost",
+   "from": "Token usage per trajectory or episode is reported in Table C.9",
+   "summary": "成本数据：离线每条 15 万到 38 万 token，在线每次约 3.9 万 token、约 100 秒。做预算时看。"
+  },
+  {
+   "id": "s22",
+   "page": 23,
+   "title": "附录 C.6 Confident Failures and Gold-Label Audit",
+   "from": "For offline verification, we start with all initial fail judgments",
+   "summary": "审计的具体做法：81 条冲突中 51 条被盲审员支持 VeriCUA，20 条被驳回，10 条不确定；在线 OSWorld 约 18 个假阳性其实是官方判错。值得细读。"
+  },
+  {
+   "id": "s23",
+   "page": 27,
+   "title": "附录 E Limitations and Broader Impacts",
+   "from": "VeriCUA trades cost for evidence",
+   "summary": "作者承认的局限：成本比单次 judge 高约一个数量级、离线弃权、在线只对可仪器化环境成立、需报告随机波动。**必读**，很短。"
+  },
+  {
+   "id": "s24",
+   "page": 28,
+   "title": "附录 F Prompts",
+   "from": "The system prompts below drive rubric synthesis in the two settings",
+   "summary": "离线与在线的 rubric 生成 prompt 和 checker 生成 prompt 原文，含数量精确、不绑定存储位置等规则。**必读**，可直接借用。"
+  }
+ ],
+ "ver": "v1"
+}

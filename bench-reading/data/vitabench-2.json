@@ -1,0 +1,626 @@
+{
+ "id": "vitabench-2",
+ "title": "VitaBench 2.0",
+ "full": "VitaBench 2.0: Evaluating Personalized and Proactive Agents in Long-Term User Interactions",
+ "arxiv": "2605.27141",
+ "pdf": "papers/2605.27141.pdf",
+ "meta": "Meituan / NUS / USTC 等 · 2026-05 · 正文 10 页 + 附录共 45 页",
+ "question": "长期、动态的用户交互怎么评：用户模拟、偏好演化、工具调用？",
+ "tldr": [
+  "**任务单位 = 一个用户的任务序列**：56 个用户，每人 10 到 20 个按时间排序的任务（共 819 个），横跨外卖、到店、旅行三个领域。任务之间插入新的交互历史（对话和行为日志），用户偏好在其中新增、删除、修改。agent 要从历史里推断偏好，再用在下一个任务上。",
+  "**数据是人定骨架、模型填肉**：用户画像和偏好全部人工标注；交互历史和任务环境由 LLM 按人设计的信号批量合成，再经强模型检查和人工审改。偏好的变化事件是人先写好的，所以偏好随时间的自洽由构造保证，而不是靠生成后再检测。",
+  "**环境里埋了两类干扰项**：一类满足指令字面但违反 rubric，一类满足 rubric 但违反用户偏好。后者靠一个专门的 noise injector 生成，目标是让「没有偏好记忆的 agent 选错、有记忆的能选对」。这是把偏好能力隔离出来测的关键设计。",
+  "**判分 = rubric + LLM 评估器，没有状态检查**：每个任务有人写的原子 rubric（二值条目），gpt-4.1 读完整轨迹逐条打勾，再按窗口聚合成轨迹分，另加一个结果分。用户模拟器被刻意削弱：不知道偏好，只按预设 to-do 说话，不泄露信息。论文没有报告评估器与人的一致率。",
+  "**结果与反直觉发现**：最强模型 Avg@4 约 0.5、Pass^4 约 0.3；主动询问任务明显比个性化任务差；多数模型接入记忆后反而比直接塞全部历史更差；开 thinking 的收益不稳定；给了真实偏好也远没到满分。",
+  "**承认的短板**：偏好和历史是程序化构造的，覆盖不了真实用户的多样性；记忆接口只抽象成 update 和 retrieve；只看 rubric，不测开放式的用户满意度。"
+ ],
+ "forUs": [
+  "「任务序列 + 中间插入新历史」的结构可以用来评 CUA 的跨会话能力：同一个剪映或 Maya 工程连续做几次修改，中间用户的审美偏好或项目约定发生变化，agent 要沿着工程里留下的痕迹（素材命名、已有风格、上一版导出设置）推断。这条是我们的推断，论文只做了生活服务。",
+  "「Set A 查询可推出 / Set B 只能靠偏好」的拆法可以直接搬来造 3D 任务：把任务里能从指令读出的约束和只能从历史工程里读出的约束分开，再针对后者造干扰项，才能确保测的是工程上下文理解而不是通用操作能力。",
+  "它的判分全靠 LLM 对着 rubric 读轨迹，没有检查应用终态。对我们不适用：UE、Maya、剪映的工程文件和导出物可以做状态检查，应该优先用确定性检查，只在审美类条目上才用 judge，并像 Terminal-Bench 那样先测 judge 与人的一致率。",
+  "用户模拟器的做法值得借鉴：给它的信息越少越好，只按脚本说话，需要追问时回答也预先写好。我们的任务如果要测 agent 会不会向用户确认模糊需求，可以照这个思路做，把「该问什么、答案是什么」写成数据。",
+  "「记忆反而变差」提醒我们：如果轨迹数据要训练带记忆或上下文压缩的 agent，评测时必须同时有 full-context 基线，否则分不清是任务难还是记忆模块丢了信息。"
+ ],
+ "readFirst": [
+  {
+   "label": "§3.2 用户画像、偏好、交互历史",
+   "why": "偏好的三种变化和信号/噪声的构造",
+   "note": "n10"
+  },
+  {
+   "label": "附录 A.1.3 交互历史合成",
+   "why": "人设计信号、模型生成、人工审改的完整流程",
+   "note": "n29"
+  },
+  {
+   "label": "附录 A.2.3 环境合成与 noise injector",
+   "why": "两类干扰项的造法和 prompt 原文",
+   "note": "n38"
+  },
+  {
+   "label": "附录 A.3.2 用户模拟器",
+   "why": "为什么要把模拟器削弱到几乎没有信息",
+   "note": "n41"
+  },
+  {
+   "label": "附录 A.3.4 评估",
+   "why": "rubric、窗口打分、结果分三者的关系",
+   "note": "n43"
+  },
+  {
+   "label": "§4.3 分析",
+   "why": "主动性差距、给真实偏好仍不满分、失败归因",
+   "note": "n21"
+  },
+  {
+   "label": "附录 D 案例",
+   "why": "同一题三种记忆后端为何分叉",
+   "note": "n52"
+  }
+ ],
+ "notes": [
+  {
+   "id": "n01",
+   "page": 1,
+   "cat": "task",
+   "from": "tasks are organized as temporally ordered sequences for individual users",
+   "to": "embedded in fragmented and heterogeneous interactions",
+   "note": "这个 bench 的基本单位不是单个任务，而是一个用户的任务序列。偏好藏在零碎的对话和行为里，不直接给 agent。"
+  },
+  {
+   "id": "n02",
+   "page": 2,
+   "cat": "task",
+   "from": "preference extraction, where agents infer implicit preferences from fragmented interactions",
+   "to": "as user behavior evolves",
+   "note": "个性化被拆成三个能力：抽取、使用、更新。这个拆法让失败可以归因到具体环节，后面的失败分析和「给真实偏好」实验都靠它。"
+  },
+  {
+   "id": "n03",
+   "page": 2,
+   "cat": "task",
+   "from": "proactiveness, which arises when user preference is conditional",
+   "to": "missing information before making decisions",
+   "note": "「主动性」被定义得很窄：偏好是有条件的（比如上午喝高咖啡因、下午喝低咖啡因），而条件在指令里缺失，agent 必须先问或先查再决定。它不是泛泛的「会不会多问」。"
+  },
+  {
+   "id": "n04",
+   "page": 2,
+   "cat": "result",
+   "from": "existing approaches often fail to consistently translate stored information",
+   "to": "markedly different outcomes",
+   "note": "引言就预告了反直觉结论：记忆机制没有稳定地带来提升，不同记忆设计的结果差异很大。"
+  },
+  {
+   "id": "n05",
+   "page": 3,
+   "cat": "task",
+   "from": "each task can be modeled as a partially observable Markov decision process",
+   "to": "task reward or evaluation function",
+   "note": "每个任务照 POMDP 写成状态、动作、观察、转移、奖励五件套，其中奖励是「评估函数」而不是环境里算出来的数。这一点决定了它不能直接当 RL 的 reward 用，见后面评分部分。"
+  },
+  {
+   "id": "n06",
+   "page": 3,
+   "cat": "task",
+   "from": "reason over explicit constraints from the user query and implicit",
+   "note": "任务难度来自两个来源：指令里的显式约束，和只能从历史推出的隐式偏好。后面的环境合成和 rubric 拆分都围绕这两类约束展开。"
+  },
+  {
+   "id": "n07",
+   "page": 4,
+   "cat": "task",
+   "from": "Gi is a set of evaluation rubrics, and Hi denotes the interaction histories exposed to",
+   "to": "fragmented user interactions over time",
+   "note": "任务的完整定义：用户 query、工具集、可执行环境、rubric 集合、以及插在前后任务之间的交互历史。和 Terminal-Bench 的四件套相比，多了「历史」这一项，少了人写的参考解。"
+  },
+  {
+   "id": "n08",
+   "page": 4,
+   "cat": "verifier",
+   "key": true,
+   "from": "The task accuracy is evaluated at both the trajectory level and outcome level by applying an evaluator",
+   "to": "atomic criteria",
+   "note": "**判分 = LLM 评估器对着人写的原子 rubric 打勾**，同时看轨迹和最终结果。没有任何对环境状态的程序化检查，这是和 Terminal-Bench 最大的区别。",
+   "infer": "原因多半是任务里有对话和推荐环节，终态里没有可查的东西；但下单这类动作本身是有状态的，论文没解释为什么不查订单记录。"
+  },
+  {
+   "id": "n10",
+   "page": 5,
+   "cat": "data",
+   "key": true,
+   "from": "Each user u is also associated with a set of preferences",
+   "to": "one of three changes",
+   "note": "**偏好随时间变化有三种事件：新增、删除、修改**，由人在任务序列的指定位置设定。变化是先设计好的，历史再围绕它生成，所以不存在「生成完才发现前后矛盾」的问题。附录给出每用户平均 48.38 次变化。"
+  },
+  {
+   "id": "n11",
+   "page": 5,
+   "cat": "data",
+   "from": "The construction of user profiles and preference distributions is data-driven",
+   "to": "behavioral heterogeneity",
+   "note": "画像的分布对齐真实业务统计，但具体每个用户是人工写的。「来自真实数据」只体现在分布层面，不是真实用户日志。"
+  },
+  {
+   "id": "n12",
+   "page": 5,
+   "cat": "data",
+   "from": "Hi can be viewed as comprising both signal interactions",
+   "to": "contextually misleading",
+   "note": "历史里有信号和噪声两类。噪声包括无关、含糊、有误导性的记录，逼 agent 区分稳定偏好和一时行为。附录说噪声约占行为的 20%。"
+  },
+  {
+   "id": "n13",
+   "page": 5,
+   "cat": "task",
+   "from": "When memory is enabled, the agent interacts only with the memory module",
+   "to": "full interaction histories",
+   "note": "**开启记忆时，agent 看不到原始历史，只能通过 memory 的 UPDATE 和 RETRIEVE 接口接触用户信息。** 这是把「记忆模块的好坏」从「模型本身的能力」里隔离出来的实验设计。"
+  },
+  {
+   "id": "n14",
+   "page": 6,
+   "cat": "task",
+   "from": "memory is incrementally updated with each new history batch",
+   "to": "long-term consistency",
+   "note": "两种参考实现：Agentic 记忆由模型自己决定保留什么、改什么，RAG 记忆用固定流程按相似度取回。对照的意图是区分「模型管记忆」和「检索管记忆」。"
+  },
+  {
+   "id": "n15",
+   "page": 6,
+   "cat": "task",
+   "from": "proactive tasks are constructed around missing but necessary information",
+   "to": "not directly observable to the agent",
+   "note": "主动性任务和普通个性化任务穿插在同一序列里，agent 不会被告知这一题是否需要追问，所以它还得自己判断「现在信息够不够」。"
+  },
+  {
+   "id": "n16",
+   "page": 7,
+   "cat": "verifier",
+   "from": "We use gpt-4.1-2025-04-14 as the user simulator and evaluator",
+   "to": "deterministic evaluation",
+   "note": "用户模拟器和评估器都是同一个 gpt-4.1，温度 0，每题跑四次。模拟器和评估器同源，评估器的偏差不会被独立校验到。"
+  },
+  {
+   "id": "n17",
+   "page": 7,
+   "cat": "result",
+   "key": true,
+   "from": "state-of-the-art models achieve only",
+   "to": "Passˆ4 of around 0.3",
+   "note": "**最强模型在全上下文设置下 Avg@4 约 0.5、Pass^4 约 0.3。** Pass^4 要求四次全对，衡量稳定性。作者特意把工具复杂度和指令难度压低，所以这个低分主要说明个性化本身难。"
+  },
+  {
+   "id": "n18",
+   "page": 8,
+   "cat": "result",
+   "from": "most models experience performance degradation when relying on memory",
+   "to": "Full Context setting",
+   "note": "多数模型用记忆后比直接给全部历史更差，Agentic 和 RAG 两种都是。作者的解释是模型还不会有效使用记忆，附录案例给出了具体机制：摘要或检索丢掉了关键的隐性阈值。"
+  },
+  {
+   "id": "n19",
+   "page": 8,
+   "cat": "result",
+   "from": "enabling thinking mode does not consistently yield higher effectiveness",
+   "to": "Number of Turns",
+   "note": "开 thinking 不稳定地提升分数，也不稳定地减少轮数。个性化缺的不是推理步数，而是抽取偏好和长期一致性。"
+  },
+  {
+   "id": "n20",
+   "page": 8,
+   "cat": "result",
+   "from": "performance generally degrades with increasing task index",
+   "to": "in",
+   "note": "任务序号越靠后分数越低，说明历史越长越难。记忆设置下降得更明显，作者归因于反复 UPDATE 和 RETRIEVE 造成的信息丢失和误差累积。"
+  },
+  {
+   "id": "n21",
+   "page": 9,
+   "cat": "result",
+   "key": true,
+   "from": "proactive performance is consistently lower than",
+   "to": "personalization performance across all model families",
+   "note": "**主动性分数在所有模型族里都低于个性化分数**，例如 Claude 46.0 对 27.4，DeepSeek 44.1 对 27.8。量化方式就是在主动性子集上单独算平均分，没有额外的「该不该提问」指标。"
+  },
+  {
+   "id": "n22",
+   "page": 9,
+   "cat": "result",
+   "from": "we provide models with",
+   "to": "ground-truth user preferences for each task",
+   "note": "对照实验：直接把真实偏好交给模型。分数提升但仍不满，DeepSeek 52.7、Claude 51.2。说明难点不止在抽取，还在把偏好用对。这个实验可以拿来估计一个 bench 里「抽取」和「使用」各占多少。"
+  },
+  {
+   "id": "n23",
+   "page": 9,
+   "cat": "result",
+   "from": "we use Claude-Opus-4.6 as an external analyzer",
+   "to": "categorize their errors into fine-grained types",
+   "note": "失败分析用 Claude-Opus-4.6 读完整轨迹，把错误分成工具类和偏好类。结论是强模型的工具错误少了，偏好错误成为主因。这里的归因同样没有报告与人工标注的一致率。"
+  },
+  {
+   "id": "n24",
+   "page": 9,
+   "cat": "limit",
+   "key": true,
+   "from": "user preferences and interaction histories are programmatically constructed",
+   "to": "diversity of real-world user behavior",
+   "note": "**作者承认：偏好和历史是程序化构造的**，换来可控的偏好动态和难度，代价是覆盖不了真实用户行为的多样性。"
+  },
+  {
+   "id": "n25",
+   "page": 9,
+   "cat": "limit",
+   "from": "the memory interface abstracts memory into update and retrieval operations",
+   "to": "end-to-end architectures",
+   "note": "记忆接口只抽象成两个操作，没有覆盖所有端到端架构。比如把记忆和策略一起训练的方案，在这个接口下比不了。"
+  },
+  {
+   "id": "n26",
+   "page": 9,
+   "cat": "limit",
+   "from": "evaluation is based on rubric-driven assessment over task trajectories",
+   "to": "beyond the scope of this work",
+   "note": "只做 rubric 判分，不测开放式的用户满意度。也就是说，「推荐得让人喜欢」这类主观质量不在评测范围内。"
+  },
+  {
+   "id": "n27",
+   "page": 19,
+   "cat": "data",
+   "key": true,
+   "from": "large language models alone are insufficient for generating high-quality user data",
+   "to": "controlled synthesis for interaction histories",
+   "note": "**分工原则：画像和偏好必须人工标，历史才交给模型合成。** 理由是 LLM 自己生成用户数据有偏见和幻觉。需要「地面真值」的部分用人，需要体量的部分用模型。"
+  },
+  {
+   "id": "n28",
+   "page": 20,
+   "cat": "task",
+   "from": "Prefers high-caffeine coffee in the morning; low-caffeine in the afternoon",
+   "to": "user_query",
+   "note": "一条完整的主动性样例：条件偏好写在历史对话里，指令漏掉了时间条件，用户模拟器预置了回答（会议在下午），期望结果是低咖啡因咖啡送到公司。每一部分都是预先写好的数据。"
+  },
+  {
+   "id": "n29",
+   "page": 21,
+   "cat": "data",
+   "from": "we first manually design how these preferences can be embedded into fragmented",
+   "to": "implicitly reflect these preferences",
+   "note": "历史合成的流程：先人工设计每条偏好如何嵌入零碎交互，再让模型批量生成。人负责「信号长什么样」，模型负责铺开。"
+  },
+  {
+   "id": "n30",
+   "page": 21,
+   "cat": "data",
+   "from": "preference changes are not directly observable from interactions",
+   "to": "implicit state transitions",
+   "note": "有些偏好变化在历史里看不到证据，只作为隐式状态变化存在，例如生病期间吃清淡、孕期结束后相关偏好消失。这让「更新偏好」不能只靠找最近的显式表态。"
+  },
+  {
+   "id": "n31",
+   "page": 21,
+   "cat": "data",
+   "key": true,
+   "from": "All interaction histories are manually reviewed and refined to ensure that",
+   "to": "unintended preference leakage",
+   "note": "**质量控制：所有历史都人工审，查连贯、查矛盾、查「无意泄露偏好」。** 泄露指历史里直接写出了本该让 agent 推断的偏好，会让题变简单。论文没给审查的通过率或工时。"
+  },
+  {
+   "id": "n33",
+   "page": 23,
+   "cat": "data",
+   "from": "All personalized content must be traceable to current_preferences",
+   "to": "or user_profile",
+   "note": "合成 prompt 规定个性化内容必须能追溯到画像或偏好清单，不许模型自己发明习惯。商户名可以编，真实景点和知名品牌不能编。这是防止合成数据自己生出新偏好的约束。"
+  },
+  {
+   "id": "n34",
+   "page": 25,
+   "cat": "task",
+   "from": "Manually constructing such environments at scale is therefore impractical",
+   "to": "programmatic validation and manual refinement",
+   "note": "每个任务的环境（商户、商品、车次等候选集）由多 agent 流水线合成，再程序化校验和人工精修。全量 41,414 个环境实体，手工造不现实。"
+  },
+  {
+   "id": "n35",
+   "page": 25,
+   "cat": "task",
+   "key": true,
+   "from": "we generate candidates that satisfy the user query but violate user preferences",
+   "to": "eliminate such distractors",
+   "note": "**两轴干扰项**：轴 A 满足指令字面但违反 rubric，逼 agent 正确调用工具并过滤；轴 B 满足指令和多数 rubric 但违反用户偏好，逼 agent 用上偏好而不是选第一个像样的。",
+   "infer": "对 GUI 任务同理：干扰项要和目标在操作上同样可达，区别只在隐含约束上。"
+  },
+  {
+   "id": "n36",
+   "page": 27,
+   "cat": "task",
+   "from": "The full environment must contain exactly one globally valid target product",
+   "to": "plainly irrelevant items for realism",
+   "note": "每个环境只有唯一正确答案，如果有别的东西也满足全部 rubric，就必须改标成干扰项。唯一性让 rubric 能写得明确，也避免评估器在多个可接受答案间犹豫。"
+  },
+  {
+   "id": "n37",
+   "page": 28,
+   "cat": "task",
+   "from": "the target merchant must not be the highest-scored merchant",
+   "to": "at least two other merchants should have higher scores",
+   "note": "防捷径的结构约束：目标商户不能在前五位，评分不能最高，至少两家比它高。这样「选评分最高的」「选第一个」都会错。后面案例里 agent 的典型错误正是默认挑高评分。"
+  },
+  {
+   "id": "n38",
+   "page": 28,
+   "cat": "task",
+   "key": true,
+   "from": "inject additional adversarial distractors so that an",
+   "to": "with preference memory still can",
+   "note": "**noise injector：专门再加一批干扰项，使得没有偏好记忆的 agent 不可靠，有记忆的仍能做对。** 它把约束分成「从指令可推出的 Set A」和「只能靠偏好的 Set B」，干扰项必须全过 A、明确违反 B。"
+  },
+  {
+   "id": "n39",
+   "page": 29,
+   "cat": "verifier",
+   "from": "Do not produce distractors whose Set B violation is ambiguous or partially satisfiable",
+   "to": "corrupt the measurement",
+   "note": "对干扰项的明确性要求：违反必须干脆，不能含糊到评估器可能判成正确。例子里「纸牌类」就不能用狼人杀当反例，因为它也可能用到牌。这是在数据端降低 judge 的判断难度。"
+  },
+  {
+   "id": "n40",
+   "page": 30,
+   "cat": "task",
+   "from": "we intentionally reduce the complexity of explicit reasoning and tool usage",
+   "to": "avoiding overly intricate tool chains",
+   "note": "刻意把工具链做简单，让成败主要取决于偏好能力。这是隔离变量的设计，代价是它不能反映真实复杂任务中偏好与工具的耦合。"
+  },
+  {
+   "id": "n41",
+   "page": 30,
+   "cat": "task",
+   "key": true,
+   "from": "It does not have access to the underlying user preferences",
+   "to": "predefined to-do list",
+   "note": "**用户模拟器被刻意削弱：不知道偏好，只按预设 to-do 发话。** 理由是 LLM 模拟器容易泄露信息，会让任务变简单。稳定性来自把能说的话限定到脚本，而不是靠 prompt 约束一个全知模拟器。"
+  },
+  {
+   "id": "n42",
+   "page": 32,
+   "cat": "task",
+   "from": "Keep your requests vague and concise",
+   "to": "you decide",
+   "note": "模拟器 prompt 的要点：指令说得含糊，被问偏好就答「随便」「你定」；只要推荐满足指令里的显式条件就接受，不评价偏好相关的选择；要身份信息就给 user ID。接受规则只看显式条件，所以模拟器的好恶不会替 agent 纠错。"
+  },
+  {
+   "id": "n43",
+   "page": 31,
+   "cat": "verifier",
+   "key": true,
+   "from": "the trajectory of each task is segmented into multiple interaction windows",
+   "to": "trajectory-level reward",
+   "note": "**判分层次：按窗口切轨迹、逐窗口打分再聚合成轨迹分，另外单设一个结果分看最终决定是否符合偏好。** 窗口分能奖励中间步骤（工具使用、澄清行为），结果分防止只有局部正确。论文没给窗口的切分规则和聚合权重。"
+  },
+  {
+   "id": "n44",
+   "page": 33,
+   "cat": "verifier",
+   "from": "you must",
+   "to": "confirm whether the assistant actually completed the ordering operation",
+   "note": "评估器 prompt 里对下单类 rubric 的要求：必须确认下单真的成功，用户说「我自己下单也行」不算。评估器是在读轨迹里的工具返回，没有直接查订单库。"
+  },
+  {
+   "id": "n45",
+   "page": 33,
+   "cat": "verifier",
+   "from": "Query tool return results are only visible to the assistant",
+   "to": "Assistant cannot fabricate Tool return results",
+   "note": "防作弊规则：工具返回只算 agent 看到的信息，不等于它推荐给了用户；agent 不能编造工具结果。评估只认 agent 对用户说出的话和实际发出的工具调用。"
+  },
+  {
+   "id": "n46",
+   "page": 34,
+   "cat": "verifier",
+   "from": "apply the functional equivalence principle",
+   "to": "meet the requirements even if the expression is not completely consistent",
+   "note": "对地址、备注这类文本，采用「功能等价」：能起到同样作用即算对。数量、送达时间则必须严格，用户让步不算。这是在严格和容错之间按字段类型分别定规则。"
+  },
+  {
+   "id": "n47",
+   "page": 36,
+   "cat": "data",
+   "from": "Each evaluation on Vitabench 2.0 covers 56 tasks",
+   "to": "per (model, memory) configuration in total",
+   "note": "成本数字：一个配置跑 819 个子任务、四次共约 3,276 次交互，墙钟时间约 3.7 到 8.6 小时（并发 20，限速 200 RPM）。一次完整评测按小时算，不适合当 RL 在线奖励。"
+  },
+  {
+   "id": "n48",
+   "page": 40,
+   "cat": "data",
+   "from": "interaction histories include",
+   "to": "approximately 20% noisy behaviors",
+   "note": "噪声约占 20%，分五类：无关、探索、代他人下单、一时冲动、取消或重复提交等纠错行为。这些噪声在形式上和真实行为一样，只是对偏好无信息或有误导。"
+  },
+  {
+   "id": "n49",
+   "page": 41,
+   "cat": "task",
+   "from": "our agentic memory backend treats",
+   "to": "rather than an append-only log",
+   "note": "Agentic 记忆的实现：每次让模型把旧记忆和新批次合并成一份新摘要，上限 4,096 token，RETRIEVE 直接返回整份摘要。摘要会覆盖旧版本，所以任何一次丢信息都会永久累积。"
+  },
+  {
+   "id": "n50",
+   "page": 42,
+   "cat": "task",
+   "from": "ranks stored chunks by cosine similarity",
+   "to": "falls below a threshold of 0.3",
+   "note": "RAG 记忆的实现：512 token 切块、text-embedding-3-large、按任务指令做余弦相似度取前 8 块。检索键是任务 query，而偏好阈值往往和 query 无关，这就是它常常漏掉隐性偏好的结构原因。"
+  },
+  {
+   "id": "n51",
+   "page": 42,
+   "cat": "task",
+   "from": "R3 (durian) and R6 (rating",
+   "to": "come from her preference memory",
+   "note": "案例里的 rubric 有 7 条，其中「含榴莲」和「评分不低于 4.3」两条完全不在指令里，只能来自偏好。目标店和干扰店卖同名同款商品，只差评分，所以只有记住阈值并且真的去看评分字段才能做对。"
+  },
+  {
+   "id": "n52",
+   "page": 44,
+   "cat": "result",
+   "key": true,
+   "from": "the agent skips rating verification and proceeds directly to ordering",
+   "to": "fabricated rating",
+   "note": "**RAG 记忆失败的机制：检索到「爱吃榴莲」，没检索到「评分不低于 4.3」，agent 没查评分就下单，还在回复里编了一个评分。** 单条隐性阈值丢失就导致 rubric 的一条不满足，整题得 0 分。"
+  }
+ ],
+ "sections": [
+  {
+   "id": "s01",
+   "page": 1,
+   "title": "摘要",
+   "from": "Large language models (LLMs) have evolved into interactive agents",
+   "summary": "提出评估个性化和主动性的 bench：按用户组织任务序列，偏好藏在零碎历史里，并提供可替换的记忆接口。结论是最强模型也远不够好。可只读这一节建立全貌。"
+  },
+  {
+   "id": "s02",
+   "page": 1,
+   "title": "§1 Introduction",
+   "from": "Recent advances in large language models (LLMs) have improved their capabilities",
+   "summary": "说明现有 agent bench 默认任务信息都在当前上下文里，缺少对隐式、会变化的用户偏好的评测，并把个性化拆成抽取、使用、更新三个维度。动机段，扫一眼即可。"
+  },
+  {
+   "id": "s03",
+   "page": 2,
+   "title": "§2 Related Work",
+   "from": "As large language models are increasingly deployed in user-facing applications",
+   "summary": "回顾个性化 LLM、个性化 bench、agent bench 三条线，指出已有个性化 bench 多是文本进文本出，不涉及工具和决策。对造 bench 帮助不大，可跳过。"
+  },
+  {
+   "id": "s04",
+   "page": 3,
+   "title": "§3 VitaBench 2.0 概览",
+   "from": "VitaBench 2.0 is designed to simulate long-term, user-agent collaboration scenarios",
+   "summary": "给出整体结构：每个用户有画像、会演化的偏好和一条时间有序的任务序列，任务之间插入新历史。读图 1 比读文字更快。"
+  },
+  {
+   "id": "s05",
+   "page": 3,
+   "title": "§3.1 Task Set",
+   "from": "Tasks in VitaBench 2.0 are organized as temporally ordered sequences",
+   "summary": "把任务形式化为 POMDP，任务由 query、工具、环境、rubric、历史五项组成，评分用 LLM 评估器对 rubric 打勾。三个领域共 66 个工具，继承自上一代。**必读**，看清任务单元的定义。"
+  },
+  {
+   "id": "s06",
+   "page": 5,
+   "title": "§3.2 Key Module",
+   "from": "VitaBench 2.0 evaluates personalization by requiring agents to infer user preferences",
+   "summary": "讲 56 个用户的画像、偏好的新增删除修改、历史中的信号与噪声，以及 UPDATE 和 RETRIEVE 两个记忆接口。**必读**，是数据怎么造的主干。"
+  },
+  {
+   "id": "s07",
+   "page": 6,
+   "title": "§3.3 Proactiveness",
+   "from": "Beyond leveraging stored user preferences, an effective personalized agent should",
+   "summary": "主动性任务围绕条件偏好和缺失信息构造，agent 要先问用户或查环境再决定，且混在普通任务里。很短，建议读。"
+  },
+  {
+   "id": "s08",
+   "page": 7,
+   "title": "§4.1 Experimental Setups",
+   "from": "We evaluate a diverse set of state-of-the-art proprietary and open LLMs",
+   "summary": "评测模型分 thinking 和 non-thinking 两组；用户模拟器和评估器都是 gpt-4.1，温度 0，每题跑四次，报 Avg@4、Pass@4、Pass^4。设置细节，快速看即可。"
+  },
+  {
+   "id": "s09",
+   "page": 7,
+   "title": "§4.2 Main Results",
+   "from": "Table 1 presents evaluation results on VitaBench 2.0",
+   "summary": "最强模型 Avg@4 约 0.5，Pass^4 约 0.3；多数模型用记忆反而比全上下文差；thinking 收益不稳定。**必读**，三条反直觉结论都在这里。"
+  },
+  {
+   "id": "s10",
+   "page": 8,
+   "title": "§4.3 Analysis & Discussion",
+   "from": "Accumulated long-term user interactions pose a fundamental challenge for context",
+   "summary": "任务序号越靠后分数越低；主动性任务分数低于个性化任务；给真实偏好后仍不满分；失败主要来自偏好而非工具。**必读**，是把能力短板定位到具体环节的实验。"
+  },
+  {
+   "id": "s11",
+   "page": 9,
+   "title": "§5 Limitation",
+   "from": "While VitaBench 2.0 provides a principled benchmark for studying personalization",
+   "summary": "作者承认三点：偏好和历史是程序化构造的，记忆接口只抽象为两个操作，评测不含开放式用户满意度。短，读完即可。"
+  },
+  {
+   "id": "s12",
+   "page": 10,
+   "title": "§6 Conclusion",
+   "from": "In this work, we introduce VitaBench 2.0, a benchmark for evaluating",
+   "summary": "总结全文，没有新信息。可跳过。"
+  },
+  {
+   "id": "s13",
+   "page": 19,
+   "title": "附录 A.1 User（画像与偏好）",
+   "from": "Modeling realistic users is critical in our setting",
+   "summary": "画像和偏好全部人工标注，理由是 LLM 单独生成用户数据有偏见和幻觉；条件偏好单独标出，用来构造主动性任务，附样例。**必读**，数据分工原则在这里。"
+  },
+  {
+   "id": "s14",
+   "page": 21,
+   "title": "附录 A.1.3 Interaction History",
+   "from": "User preferences are not directly exposed to the agent",
+   "summary": "交互历史由人先设计信号、模型再批量合成，含显式与隐式的偏好变化、人为加入的噪声，全部人工审改防泄露。后附合成 prompt 原文，值得细读。"
+  },
+  {
+   "id": "s15",
+   "page": 25,
+   "title": "附录 A.2.2 Environment Synthesis",
+   "from": "As each task in VitaBench 2.0 is formulated as an agentic task, it requires an executable",
+   "summary": "用多 agent 流水线合成每题的商户和商品库，含两类干扰项和唯一目标，经强模型检查加人工精修。**必读**，是干扰项设计的核心。"
+  },
+  {
+   "id": "s16",
+   "page": 27,
+   "title": "附录 A.2.3 环境合成与 noise injector prompt",
+   "from": "Produce a structured database of merchants and items that is consistent with",
+   "summary": "环境生成器和噪声注入器的 prompt 原文，含目标位置、评分排名、干扰项数量等具体约束。要照抄造题流程时再读。"
+  },
+  {
+   "id": "s17",
+   "page": 30,
+   "title": "附录 A.3.2 User Simulator",
+   "from": "Following prior work on complex tool-use benchmarks",
+   "summary": "模拟器不知道偏好，只按预设 to-do 说话，以防信息泄露；主动性任务里它的回答也是预先写好的。**必读**，解释了稳定性从哪来。"
+  },
+  {
+   "id": "s18",
+   "page": 31,
+   "title": "附录 A.3.4 Evaluation",
+   "from": "Task outcomes are evaluated based on manually curated rubric sets",
+   "summary": "评分由人工 rubric、窗口级打分和结果级打分三部分组成，后附评估器 prompt 原文。**必读**，但注意文中没有给评估器的一致率验证。"
+  },
+  {
+   "id": "s19",
+   "page": 36,
+   "title": "附录 C.2 Benchmark Data Analysis",
+   "from": "VitaBench 2.0 is designed to evaluate personalized and proactive agents in realistic",
+   "summary": "给出数据统计：56 个用户、819 个任务、41,414 个环境实体，以及画像、偏好类别、历史时长和噪声占比。需要核对数字时查阅，其余可跳过。"
+  },
+  {
+   "id": "s20",
+   "page": 41,
+   "title": "附录 C.2.4 Implementation Configurations",
+   "from": "Following the settings of MemAgent [21], our agentic memory backend treats",
+   "summary": "两种记忆后端的实现细节：Agentic 为 4,096 token 的摘要改写，RAG 为 512 token 分块、取前 8 块。复现时必读，否则可跳过。"
+  },
+  {
+   "id": "s21",
+   "page": 42,
+   "title": "附录 D.1 Case Study",
+   "from": "User A891207 is a 26-year-old Party affairs officer living in Jinzhou",
+   "summary": "用同一道外卖题对比三种后端，展示 RAG 漏掉评分阈值导致失败，并跟踪偏好随时间漂移的过程。**必读**，是理解记忆为何变差的最好材料。"
+  }
+ ],
+ "ver": "v1"
+}

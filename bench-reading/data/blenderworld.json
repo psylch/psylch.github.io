@@ -1,0 +1,602 @@
+{
+ "id": "blenderworld",
+ "title": "BlenderWorld",
+ "full": "BlenderWorld: Benchmarking Visual Agents for 3D Creation from Real-World References",
+ "arxiv": "2610.23986",
+ "pdf": "papers/2610.23986.pdf",
+ "meta": "浙江大学 / 阿里巴巴 Token Hub 等 · 2026-10 · 正文 9 页 + 附录（共 23 页）",
+ "question": "3D 创作质量怎么拆成二值判据，agent judge 怎么直接检查工程文件？",
+ "tldr": [
+  "**任务 = 创作简报 + 参考素材**：223 个任务，每题由自然语言请求、可选的图片或视频参考、可选的 Markdown/YAML/JSON 规格文件组成。参考图被指定三种角色：复刻、修改、参考式设计。交付物必须包含可编辑的 .blend 工程和渲染图。",
+  "**判据靠\"可追溯清单\"写出来**：先由模型从简报里抽出带原文出处的需求清单，再合并成二值判据（共 2,651 条，平均每题 11.9 条），每条带类别、权重（3/2/1）、证据类型。至少两个不同的审稿模型独立审，必须给出反例才算有效意见，最后冻结。",
+  "**判据按证据类型分流给两种 judge**：看画面的 41.8% 判据交给 VLM judge（只看渲染图和导出媒体）；看内部结构的 58.2% 判据交给 Agent judge，它能打开 .blend 在 Blender 里跑 Python、查场景和对象信息。分流的理由是尺寸、拓扑、文件属性无法从渲染图可靠判断。",
+  "**二值判据之外补了连续的画质分**：另有 8 个维度、每项 1–10 分，由 VLM 看渲染图打分，与判据通过率各占一半合成总分。两者在单个作品上的 Spearman 相关只有 0.630，作者认为它们测的是不同的东西。",
+  "**judge 和人的一致性只验证了\"成对偏好\"**：150 对作品、每对 3 名人工，最好的 judge（GPT-5.6-terra）总分偏好一致率 82.99%；但两个作品总分差小于 10 分时降到 68.57%。论文没有单独验证每条二值判据，也没有做\"只看渲染图的 judge\"的对照实验。",
+  "**作者承认的短板**：agent 目前不能操作 GUI，judge 也不能交互式地拨动绑定或动画控件；每个模型每题只跑一次；评分由模型完成，专家对判据的校准还在计划中；只在 Linux、Blender 一个软件上做。"
+ ],
+ "forUs": [
+  "这篇给了一个可以直接抄的\"判据流水线\"：需求清单带出处、每条判据自带通过/不通过条件、标证据类型、权重、至少两个模型独立审并必须给反例、最后冻结。用于 UE、Maya、Blender 的任务验收表，成本主要在审稿 prompt 而不是人工。",
+  "\"证据类型分流\"解决的是 3D 工程特有的问题：渲染好看不代表工程正确。我们的 verifier 应该同样分两条路，画面类判据看渲染，结构类判据（对象数、尺寸、面数、层级、材质槽、关键帧）由脚本或 agent 去读工程文件。这条路对 GUI、MCP、代码三种接口都成立，因为只看交付物。",
+  "论文只给了 Blender 的 Python 和 MCP 接口，没有 GUI 对照，作者把 GUI 列为未来工作。所以\"GUI 轨迹能否产出同样质量的工程\"这件事没有现成答案，正是我们采集 CUA 轨迹时能补的数据空缺。",
+  "judge 与人的一致性验证值得照做，但要做得更细：论文只验证了总分的成对偏好，没验证单条判据。我们如果拿这种判据做 RL 奖励，需要让专家逐条抽检判据的判定，而不是只看总排序。",
+  "附录 E.8 的失败案例（自检量错了对象、只满足相机视角、物体悬空）说明 agent 会钻\"自己的检查\"的空子。作为训练数据，这类轨迹可以做成负例，作为奖励时则要防止 agent 对着可见的检查项优化。"
+ ],
+ "readFirst": [
+  {
+   "label": "§3.2 Benchmark Construction",
+   "why": "任务怎么造、三种参考角色、判据怎么从简报里抽出来",
+   "note": "n09"
+  },
+  {
+   "label": "§4.1 Evaluation Protocol",
+   "why": "Agent-as-Judge 与 VLM-as-Judge 的分流，全文最核心的设计",
+   "note": "n16"
+  },
+  {
+   "label": "§4.2 Metrics",
+   "why": "判据分和画质分怎么合成，失败怎么记",
+   "note": "n22"
+  },
+  {
+   "label": "附录 B Rubric Construction",
+   "why": "判据的字段、合并规则、反例式审稿，可以直接当模板",
+   "note": "n38"
+  },
+  {
+   "label": "附录 E.1 Judge 与人的一致性",
+   "why": "唯一的 judge 验证实验，以及它没覆盖的部分",
+   "note": "n43"
+  },
+  {
+   "label": "附录 E.8 失败与自检漂移",
+   "why": "agent 如何通过 2D 取巧或自检跑偏而被工程检查抓住",
+   "note": "n48"
+  },
+  {
+   "label": "§7 Future Work",
+   "why": "作者承认的局限：GUI、交互式 judge、专家校准",
+   "note": "n32"
+  }
+ ],
+ "notes": [
+  {
+   "id": "n01",
+   "page": 1,
+   "cat": "task",
+   "from": "evaluating agents on practical 3D modeling tasks presents three major challenges",
+   "note": "作者把 3D bench 的难点归为三项：环境怎么选、任务怎么覆盖、产出怎么评。后面的设计基本是逐条回答这三个问题。"
+  },
+  {
+   "id": "n02",
+   "page": 2,
+   "cat": "verifier",
+   "from": "Reliable evaluation must therefore assess both visual properties and underlying structures",
+   "to": "beyond what a single rendered view can reveal",
+   "note": "出发点：真实需求往往没有标准 3D 答案，开放简报也可以有多个合理解，所以不能拿参考资产做比对，只能写条件去检查，而且要同时看画面和底层结构。"
+  },
+  {
+   "id": "n03",
+   "page": 2,
+   "cat": "verifier",
+   "key": true,
+   "from": "we design an evidence-routed evaluation protocol",
+   "to": "continuous visual-quality dimensions",
+   "note": "**证据路由评测**：一个自动 agent 先按任务选多个视角渲染，然后用 2,651 条二值判据加连续的画质维度打分。二值判据负责\"要求满足没有\"，连续分负责\"看着怎么样\"。"
+  },
+  {
+   "id": "n04",
+   "page": 2,
+   "cat": "verifier",
+   "key": true,
+   "from": "we employ a dual-judge system",
+   "to": "bypass visual shortcuts",
+   "note": "**双 judge**：VLM 管视觉和空间，Agent 直接用程序检查场景结构，后者能绕过\"画面上看着对\"的取巧。这是全文区别于只看渲染图的评测的关键。"
+  },
+  {
+   "id": "n05",
+   "page": 2,
+   "cat": "task",
+   "from": "223 tasks spanning 16 practical application scenarios",
+   "to": "22 subcategories",
+   "note": "223 题，16 个应用场景、9 大类、22 个子类。场景包括分镜、产品发布、游戏资产、电商视觉、房产营销、科学插图等，不是单纯的建模练习题。"
+  },
+  {
+   "id": "n06",
+   "page": 3,
+   "cat": "task",
+   "from": "a natural-language request q, optional image or video references",
+   "to": "optional specification files",
+   "note": "任务的输入是三件：文字请求、可选的图片或视频参考、可选的规格文件。规格文件把细节（尺寸、材质表、相机、面数预算）放进附件，请求里只引用，因此判据能追溯到具体文件。"
+  },
+  {
+   "id": "n07",
+   "page": 3,
+   "cat": "task",
+   "from": "Through Blender's Python API and MCP tools, actions include scene inspection, Python execution",
+   "to": "and rendering",
+   "note": "agent 的动作空间只有 Blender Python 和 MCP 工具：查场景、跑 Python、导入资产、渲染。交付物是可编辑工程、渲染图、动画视频和辅助文件。"
+  },
+  {
+   "id": "n08",
+   "page": 3,
+   "cat": "verifier",
+   "from": "Our evaluation checks these against the brief and references",
+   "to": "multiple valid 3D implementations",
+   "note": "评测的立场：对照简报和参考去检查条件，而不是比对某个标准模型，同一个条件允许多种实现。代价是判据必须写得足够具体，否则 judge 之间会不一致。"
+  },
+  {
+   "id": "n09",
+   "page": 4,
+   "cat": "task",
+   "key": true,
+   "from": "We assign each visual reference one of three roles",
+   "to": "reference-based design",
+   "note": "**三类任务由参考图的角色定义**：recreation 复刻（保持主要形状和空间关系）、modification 修改（做指定改动、保留指定结构）、reference-based design 参考式设计（借鉴形态、风格或布局，做新设计）。同一个角色同时决定初始任务生成和请求改写。"
+  },
+  {
+   "id": "n10",
+   "page": 4,
+   "cat": "data",
+   "from": "An MLLM then assesses image quality and structural complexity",
+   "to": "shape, layout, or materials",
+   "note": "参考素材是人工挑选的真实图片，覆盖室内、建筑、产品、机械结构、自然环境；再由多模态模型评估质量和结构复杂度，偏好结构清晰、形状布局材质信息充足的图。论文没有说明图片的版权来源或许可。"
+  },
+  {
+   "id": "n11",
+   "page": 4,
+   "cat": "task",
+   "from": "Tasks with detailed specifications may also include Markdown, YAML, or JSON attachments",
+   "to": "or asset budgets",
+   "note": "规格文件是为了让数值类要求可检查：尺寸、材质清单、相机设置、资产预算。这样\"尺寸 150 mm\"这类判据有明确的出处。"
+  },
+  {
+   "id": "n12",
+   "page": 4,
+   "cat": "verifier",
+   "from": "the brief explicitly requests both rendered outputs and an editable project",
+   "note": "结构校验保证每个简报都明确要求渲染图和可编辑工程。这一条是后面\"没有 .blend 就得 0 分\"和 Agent judge 能打开工程检查的前提。"
+  },
+  {
+   "id": "n13",
+   "page": 4,
+   "cat": "data",
+   "from": "a model distinct from the task generator independently examines the initial specification",
+   "to": "task feasibility",
+   "note": "简报的语义审查由和出题者不同的模型做，检查图文是否对齐、约束是否自洽、关键要求有没有被改写时丢掉、任务是否可行。没过的退回重写。这里是模型审模型，论文没说有多少题被退回。"
+  },
+  {
+   "id": "n14",
+   "page": 4,
+   "cat": "verifier",
+   "from": "A generator extracts requirements from validated briefs, converting them into binary",
+   "to": "criteria with source links",
+   "note": "**判据由模型从简报里抽出来，不是人逐条写**。每条判据带原文出处，并标 13 个类别之一、权重（主要 3 / 次要 2 / 细节 1）、证据类型（render 或 scene_summary）。出处链接是后面审稿能查\"有没有凭空加要求\"的基础。"
+  },
+  {
+   "id": "n15",
+   "page": 4,
+   "cat": "verifier",
+   "key": true,
+   "from": "We iteratively refine drafts via pilot evaluations",
+   "to": "evaluability using concrete counterexamples",
+   "note": "**怎么保证判据可判定**：先让一个模型（GPT-5.6-Sol）实际跑一轮评测，找出歧义和重复判定；再让至少两个独立审稿模型检查覆盖、出处和可评估性，并要求用具体反例说话。最后由编辑合并、冻结。",
+   "infer": "起草判据的模型同时也是被评测的第 3 名，论文没讨论这是否带来偏向。"
+  },
+  {
+   "id": "n16",
+   "page": 5,
+   "cat": "verifier",
+   "key": true,
+   "from": "Agent-as-Judge handles scene_summary criteria, which cover requirements on internal",
+   "to": "cannot be reliably verified from rendered views alone",
+   "note": "**证据分流**：内部结构和原生文件属性这类判据，渲染图不能可靠验证，所以交给 Agent judge；外观、布局、运动类判据交给 VLM judge。58.2% 的判据走前一条，说明这类检查在 3D 里占多数。"
+  },
+  {
+   "id": "n17",
+   "page": 5,
+   "cat": "verifier",
+   "key": true,
+   "from": "The agent Judger inspects the deliverables through multiple tools provided by Blender",
+   "to": "internal states",
+   "note": "**Agent judge 是什么**：它拿到交付物后用 Blender 提供的多个工具检查并记录内部状态，必要时也看画面，对分到的每条判据给出二值结论和证据。图 4 列出的工具包括 execute_blender_code、get_scene_info、get_viewport_screenshot，以及 FFmpeg、Pillow、NumPy。论文正文没说它具体跑了哪些检查脚本。"
+  },
+  {
+   "id": "n18",
+   "page": 5,
+   "cat": "verifier",
+   "from": "AaR selects eight complementary views to reveal task-relevant details",
+   "to": "common rendering budget across submissions",
+   "note": "渲染视角由 agent 按任务选，固定 8 个，保证各提交渲染预算一致。这样\"人在侧面不见了\"这类单视角取巧会被暴露出来。"
+  },
+  {
+   "id": "n19",
+   "page": 5,
+   "cat": "verifier",
+   "from": "It may adjust cameras, framing, and rendering",
+   "to": "not be repaired",
+   "note": "防止评测反过来修作品：渲染 agent 可以调相机、取景、渲染设置，但必须保留提交的几何、材质、灯光、动画和色彩管理，无效视角最多重渲染两次，不能修补作品的缺陷。"
+  },
+  {
+   "id": "n20",
+   "page": 5,
+   "cat": "verifier",
+   "from": "Unsupported rubric claims receive zero",
+   "note": "VLM judge 对判据下结论必须有证据，没有证据支撑的判定记 0。另外还有一个\"盲描述\"环节：先让模型不看判据，单独描述提交图和参考图，作为辅助依据，降低被判据措辞带偏的可能。"
+  },
+  {
+   "id": "n21",
+   "page": 6,
+   "cat": "verifier",
+   "from": "To address the limitations of binary rubrics in quantifying continuous perceptual attributes",
+   "to": "eight dimensions",
+   "note": "二值判据测不了写实感、光影这类连续属性，所以另加 8 个维度（场景保真、物理合理、风格色彩、写实、空间布局、比例、光照材质、完整度），每项 1–10 的整数，由 VLM 依据渲染图给分并写理由。"
+  },
+  {
+   "id": "n22",
+   "page": 6,
+   "cat": "verifier",
+   "from": "We set λ = 0.5 to place equal emphasis",
+   "to": "holistic aesthetic quality",
+   "note": "**合成分 = 0.5 判据加权通过率 + 0.5 画质分**。权重是作者定的，附录 E.6 显示换权重时排名基本不变（只有第 7 名附近在 Opus-4.8 和 Grok-4.6 之间互换）。"
+  },
+  {
+   "id": "n23",
+   "page": 6,
+   "cat": "verifier",
+   "from": "Failed evaluations receive zero and remain in the denominator",
+   "note": "评测失败记 0 并保留在分母里；没有 .blend 文件直接 0 分。这个规则让\"交付不完整\"直接吃分，也意味着评测环节的失败会被算到模型头上。"
+  },
+  {
+   "id": "n24",
+   "page": 6,
+   "cat": "task",
+   "from": "GPT-6-Astra and GPT-5.6-Sol use Codex, while all other agents use Claude Code",
+   "note": "被测的是\"模型加自带 harness\"：两个 GPT 用 Codex，其余十一个用 Claude Code。所以排名混合了模型能力和 harness 差异，论文没有拆开。每个模型每题只跑一次。"
+  },
+  {
+   "id": "n25",
+   "page": 6,
+   "cat": "verifier",
+   "from": "artifact generation and evaluation are executed in strictly separated containers",
+   "to": "to prevent rubric hacking",
+   "note": "生成和评测在不同容器里，判据对 agent 完全不可见，防止对着判据优化。这是和 Terminal-Bench 同类的隔离思路。"
+  },
+  {
+   "id": "n26",
+   "page": 6,
+   "cat": "task",
+   "from": "Shell, file, image-viewing, and Blender MCP tools support",
+   "to": "inspection, and revision",
+   "note": "被测 agent 的工具：shell、文件、看图，加 Blender MCP。它们既能写脚本在后台启动 Blender，也能通过 MCP 在运行的 Blender 里执行代码和取视口截图。完全没有 GUI 点击。"
+  },
+  {
+   "id": "n27",
+   "page": 6,
+   "cat": "verifier",
+   "from": "we employ GPT-5.6-terra for automatic agent rendering",
+   "to": "dimension judging",
+   "note": "评测阶段的渲染、判据和画质分都用同一个模型 GPT-5.6-terra。选它的依据是附录 E.1 的人工偏好一致性。",
+   "infer": "被测模型里有同一家的 GPT-6 和 GPT-5.6-Sol 排在前列，论文没有测试 judge 的自我偏好。"
+  },
+  {
+   "id": "n28",
+   "page": 7,
+   "cat": "result",
+   "key": true,
+   "from": "satisfying every rubric criterion remains challenging",
+   "note": "最强的 GPT-6-Astra 总分 79.9，但全部判据都通过的任务只有 42.2%（Opus-5 为 25.6%，其余最高 15.7%）。总分高而全对率低，是因为总分里有加权通过率和画质分，对\"差一点\"很宽容。"
+  },
+  {
+   "id": "n29",
+   "page": 7,
+   "cat": "result",
+   "from": "In Art & Animation, the model maintains a high Rubric score",
+   "to": "lowest Dimension score",
+   "note": "判据分和画质分会背离：美术与动画类判据分 89.6 而画质分最低（64），渲染与仿真类则判据分最低（70.6）。这是同时报两种分的价值，也说明单一分数会掩盖问题。"
+  },
+  {
+   "id": "n30",
+   "page": 8,
+   "cat": "result",
+   "from": "higher visual call volume does not inherently guarantee effective artifact refinement",
+   "note": "看图多不等于改得好：看图最频繁的两个模型成绩一般，GPT-6-Astra 平均只看 15 次图却拿到多模态最高分。看图只是提供了反馈机会，不保证模型能诊断问题并改对。"
+  },
+  {
+   "id": "n31",
+   "page": 9,
+   "cat": "result",
+   "from": "current agents tend to rely on 2D visual shortcuts to make things look right at a glance",
+   "note": "**四类失败**：缺少动态交互、视角不一致（人物在侧视图里消失）、局部几何畸变、接触约束违反（人物悬空）。共同点是 agent 为了让某个视角看起来对而走 2D 捷径，这正是只看渲染图的评测会放过的错误。"
+  },
+  {
+   "id": "n32",
+   "page": 9,
+   "cat": "limit",
+   "key": true,
+   "from": "We plan to give the agent judge Computer-Use Agent (CUA) tools",
+   "to": "intended",
+   "note": "作者承认：目前 Agent judge 不能操作 GUI，也无法交互地拨动控件去测试绑定、动画和模拟。计划给 judge 加 CUA 工具，并配合确定性脚本做可复现的尺寸、公差、几何检查。"
+  },
+  {
+   "id": "n33",
+   "page": 9,
+   "cat": "limit",
+   "from": "For precision-critical tasks, reference solutions and",
+   "to": "geometric metrics could supplement rubric-based judgments",
+   "note": "承认纯判据对精度要求高的任务不够：需要参考解和几何指标（例如体素 IoU）补充。当前的 BlenderWorld 没有任何参考解可比对。"
+  },
+  {
+   "id": "n34",
+   "page": 10,
+   "cat": "limit",
+   "from": "We will work with professional 3D artists to iteratively",
+   "to": "practical acceptance standards",
+   "note": "承认判据还没有经过专业 3D 美术师的校准。目前的判据由模型起草、模型审稿，人工只是补充，所以\"判据是否符合行业验收标准\"并未验证。"
+  },
+  {
+   "id": "n35",
+   "page": 10,
+   "cat": "limit",
+   "from": "For organic subjects and other cases in which binary checks offer limited discrimination",
+   "to": "reference materials",
+   "note": "承认二值判据对有机体（动物、角色）区分度有限，打算改成按部件对照参考的分级评估。这对应结果里角色与动物类得分偏低。"
+  },
+  {
+   "id": "n36",
+   "page": 10,
+   "cat": "limit",
+   "from": "Repeated runs on representative configurations",
+   "to": "stability of rankings",
+   "note": "承认现在每个配置只跑了一次，排名的稳定性没有评估，也没有成本、延迟的统一对比。"
+  },
+  {
+   "id": "n37",
+   "page": 10,
+   "cat": "limit",
+   "from": "explore providing models with CUA tools for operating Blender",
+   "to": "through its graphical interface",
+   "note": "承认没有测 GUI 操作：当前评测只在 Linux 上通过 API 和 MCP 进行，GUI 与 API 的成绩、效率、失败模式的对比留作未来工作。"
+  },
+  {
+   "id": "n38",
+   "page": 13,
+   "cat": "verifier",
+   "from": "A merged criterion passes only when all constituent conditions",
+   "to": "logical complement",
+   "note": "合并判据的规则：多个条件合并成一条时，必须全部成立才通过，不通过的条件是其逻辑补集。每条判据要求自带\"自包含的通过/不通过条件\"。"
+  },
+  {
+   "id": "n39",
+   "page": 13,
+   "cat": "verifier",
+   "from": "Scene/file inspection supports exact dimensions, topology, internal",
+   "to": "structure, configuration, and output metadata",
+   "note": "证据分配规则：渲染图和导出媒体支撑形状外观、构图、运动；场景或文件检查支撑精确尺寸、拓扑、内部结构、配置和输出元数据。同时包含两类属性的判据走场景检查路线，judge 也可以看图。"
+  },
+  {
+   "id": "n40",
+   "page": 14,
+   "cat": "data",
+   "from": "At least two models independently inspect the same candidate and materials",
+   "to": "evaluated-model scores",
+   "note": "审稿流程：至少两个模型各自独立审同一份候选判据，看不到彼此的意见，也看不到被测模型的得分。审稿人包括 GPT-5.6-Sol、Gemini 3.1 Pro Preview、Claude Opus 4.8。"
+  },
+  {
+   "id": "n41",
+   "page": 14,
+   "cat": "data",
+   "from": "Findings cite sources and a counterexample",
+   "to": "or a violating output that would pass",
+   "note": "**每条审稿意见必须附反例**：要么是一个合格输出会被判不过，要么是一个违规输出会被判过。这个要求把判据审查变成可检验的动作。语义改动要重新独立审，最后冻结条件、权重和证据分配。"
+  },
+  {
+   "id": "n42",
+   "page": 14,
+   "cat": "data",
+   "from": "Agents can write scripts",
+   "to": "and revise their projects",
+   "note": "被测 agent 的运行环境：Blender 4.2.10 LTS，每个任务一张 NVIDIA GPU，Cycles 渲染，FFmpeg 和 ImageMagick 可用。资产可从 Poly Haven 和 Sketchfab 检索下载，这会影响\"自己建模\"的比重。"
+  },
+  {
+   "id": "n43",
+   "page": 15,
+   "cat": "verifier",
+   "key": true,
+   "from": "We evaluate the judge models on 150 pairs of artifacts generated for the same input",
+   "to": "three human reviewers",
+   "note": "**judge 与人的一致性验证**：150 对同一输入生成的作品，每对 3 名人工选 A、B 或平局，取多数；三类全是各一票的 3 对剔除，剩 147 对。比较的是 judge 的总分差的符号是否与人工多数一致。"
+  },
+  {
+   "id": "n44",
+   "page": 15,
+   "cat": "result",
+   "key": true,
+   "from": "Table 6 shows that the Overall scores achieve the highest pairwise agreement",
+   "to": "76.87% for DeepSeekV4.1-Flash",
+   "note": "总分偏好一致率：GPT-5.6-terra 82.99%，Gemini-3.8-Flash 77.55%，DeepSeek-V4.1-Flash 76.87%；总分比单独的判据分更接近人工。总分差小于 10 分的 70 对里，三者降到 68.57%、58.57%、55.71%，说明 judge 在两个作品接近时分不清。",
+   "infer": "验证的是整体偏好，不是单条判据的判定对错，也没有\"只看渲染图的 judge\"对照，所以 Agent judge 相对 VLM judge 的增量无法从论文数据直接读出。"
+  },
+  {
+   "id": "n45",
+   "page": 15,
+   "cat": "result",
+   "from": "Thus, 49 GPT-6-Astra outputs and 28 Opus-5 outputs satisfy",
+   "to": "while still missing at least one rubric",
+   "note": "全对这个门槛很严：GPT-6-Astra 有 143 个任务达到判据分 90，但全对只有 94 个。附录 E.3 还提醒一条判据可能合并多个条件，只差一条不等于容易修。"
+  },
+  {
+   "id": "n46",
+   "page": 18,
+   "cat": "result",
+   "from": "the Spearman correlation coefficient across the 2,899 output artifacts is 0.630",
+   "note": "判据分和画质分在单个作品上相关系数只有 0.630。有的作品严格满足所有要求但网格穿插、光照不自然，有的看起来好看却违反约束。所以合成分里两部分各自承担不同的信息。"
+  },
+  {
+   "id": "n47",
+   "page": 19,
+   "cat": "result",
+   "from": "GPT-6-Astra segments the two people from the reference and maps each crop onto a single flat quad",
+   "note": "视角不一致的根因：agent 把参考图里的人抠出来贴在一个平面四边形上，只对提交相机成立，侧视图就消失。论文指出只改贴图修不了，缺的是体积。这类问题需要多视角渲染或场景检查才能发现。"
+  },
+  {
+   "id": "n48",
+   "page": 21,
+   "cat": "result",
+   "key": true,
+   "from": "The self-check thus confirms",
+   "to": "component-length requirement unsatisfied",
+   "note": "**自检漂移**：简报要求 150 mm 木腿加黄铜脚轮，Opus-5 在任务清单里改成了含脚轮共 150 mm，结果木腿只有 102 mm，自己的验证脚本量总高度报 150.0 mm 通过；而冻结的场景检查单独量木腿，判为短了 32%。说明 agent 自查的目标会被自己改写，外部检查必须按原需求独立做。"
+  },
+  {
+   "id": "n49",
+   "page": 21,
+   "cat": "result",
+   "from": "they tend to solve specific, explicit",
+   "to": "gravity and contact",
+   "note": "另一个例子：GPT-5.6-Sol 把鞋尖与塔对齐的投影误差压到 1e-6 以下，却让人悬空在草地上方。agent 会机械地满足被明确写出的约束，而忽视没写出来的物理常识；这些没写出来的要求要靠判据主动补上（如接触、支撑）。"
+  }
+ ],
+ "sections": [
+  {
+   "id": "s01",
+   "page": 1,
+   "title": "摘要",
+   "from": "Recent advances in multimodal large language models (MLLMs) have enabled",
+   "summary": "223 个任务、2,651 条二值判据加整体画质分，13 个模型里 GPT-6-Astra 最高 79.9。结论是模型能理解宽泛指令，但细粒度 3D 空间一致性和结构还原差。可快速读。"
+  },
+  {
+   "id": "s02",
+   "page": 1,
+   "title": "§1 Introduction",
+   "from": "Visual agents built on multimodal large language models (MLLMs) can interpret",
+   "summary": "提出评测 3D 创作的三个难点（环境、覆盖、产出评估），引出证据路由和双 judge。贡献列表里有 GPT-6-Astra 全对率只有 42.2%。**必读**第二页的双 judge 设计。"
+  },
+  {
+   "id": "s03",
+   "page": 3,
+   "title": "§2 Related Work",
+   "from": "Productivity-oriented benchmarks assess whether agents can complete software workflows",
+   "summary": "把已有 3D/Blender bench 和通用办公 bench 放在一起比较，表 1 对比了任务范围、判据和 3D 检查方式。只想知道和别人差在哪看表 1，其余可跳过。"
+  },
+  {
+   "id": "s04",
+   "page": 3,
+   "title": "§3.1 Task Definition",
+   "from": "BLENDERWORLD evaluates interactive 3D creation from production briefs",
+   "summary": "任务输入是请求、参考和规格文件，动作是 Blender Python 与 MCP，交付物是工程、渲染、视频和辅助文件。篇幅短，值得一看以了解接口。"
+  },
+  {
+   "id": "s05",
+   "page": 4,
+   "title": "§3.2 Benchmark Construction",
+   "from": "Inspired by practical uses of 3D content in social media",
+   "summary": "**必读**。讲任务多样性、参考图三种角色（复刻、修改、参考式设计）、规格附件、双轨校验和判据生成与审稿流程。是造 bench 的核心方法。"
+  },
+  {
+   "id": "s06",
+   "page": 4,
+   "title": "§3.3 Dataset Statistics",
+   "from": "BLENDERWORLD contains 223 production briefs across 9 main task categories",
+   "summary": "223 题、145 题带视觉参考、59 题带规格文件、判据 2,651 条（每题 6–22 条，平均 11.9）。58.2% 判据走场景检查。可扫一眼数字。"
+  },
+  {
+   "id": "s07",
+   "page": 5,
+   "title": "§4.1 Evaluation Protocol",
+   "from": "For each task, an agent uses a harness equipped with Blender MCP",
+   "summary": "**必读**。自动渲染 agent 选 8 个视角，判据按证据类型分给 Agent judge 和 VLM judge，还有盲描述和证据冲突优先级。是全文最关键的评测设计。"
+  },
+  {
+   "id": "s08",
+   "page": 6,
+   "title": "§4.1 Dimension Judging 与 §4.2 Metrics",
+   "from": "To address the limitations of binary rubrics in quantifying continuous perceptual",
+   "summary": "8 个画质维度各 1–10 分，与判据加权通过率按 1:1 合成总分，失败记 0。值得读，了解怎么合成分数。"
+  },
+  {
+   "id": "s09",
+   "page": 6,
+   "title": "§5.1 Evaluation Setup",
+   "from": "We compare thirteen agents on the same 223 tasks",
+   "summary": "13 个 agent 同一套任务，GPT 两个用 Codex，其余用 Claude Code，每题只跑一次，生成与评测容器分离。看其中的隔离和 judge 选择。"
+  },
+  {
+   "id": "s10",
+   "page": 7,
+   "title": "§5.2 Main Results",
+   "from": "GPT-6-Astra leads across all completion metrics",
+   "summary": "GPT-6-Astra 总分 79.9，全对率 42.2%；成绩接近的模型工具调用量差好几倍。读表 2 即可。"
+  },
+  {
+   "id": "s11",
+   "page": 7,
+   "title": "§5.3 Analysis",
+   "from": "Among the five agents shown in Figure 5a, GPT-6-Astra leads eight of nine categories",
+   "summary": "分类别得分、工具分配与看图次数、四类失败（缺交互、视角不一致、几何畸变、接触违反）。**必读**失败分析一段。"
+  },
+  {
+   "id": "s12",
+   "page": 9,
+   "title": "§6 Conclusion",
+   "from": "We introduced BLENDERWORLD, a benchmark for evaluating visual agents",
+   "summary": "总结，可跳过。"
+  },
+  {
+   "id": "s13",
+   "page": 9,
+   "title": "§7 Future Work",
+   "from": "We plan to extend BlenderWorld in five directions",
+   "summary": "**必读**局限：给 judge 加 CUA 工具、确定性脚本检查、专家校准判据、多 DCC、GUI 操作、重复运行。"
+  },
+  {
+   "id": "s14",
+   "page": 13,
+   "title": "附录 A Task Coverage 与 B Rubric Construction",
+   "from": "Each task has one application-scenario label describing its intended use",
+   "summary": "16 个应用场景的分布，输入组合（56 题无参考、93 题只有图片等），以及判据的字段、合并规则、13 个类别和证据分配。**必读** B 部分，可直接当判据模板。"
+  },
+  {
+   "id": "s15",
+   "page": 14,
+   "title": "附录 B 后半 与 C Scoring Details",
+   "from": "Pilot diagnosis and independent review",
+   "summary": "判据的试跑、独立审稿、反例式交叉检查和冻结流程，以及画质 8 个维度的分档锚点。**必读**审稿流程。"
+  },
+  {
+   "id": "s16",
+   "page": 14,
+   "title": "附录 D Runtime and Resource Accounting",
+   "from": "The reference runtime uses Blender 4.2.10 LTS, Codex CLI 0.147.0",
+   "summary": "运行环境、工具清单（execute_blender_code、get_scene_info、Poly Haven、Sketchfab）和资源统计口径。想复现再读。"
+  },
+  {
+   "id": "s17",
+   "page": 15,
+   "title": "附录 E.1 Detailed Analysis of Judge Model",
+   "from": "We evaluate the judge models on 150 pairs of artifacts generated for the same input",
+   "summary": "**必读**。judge 和三名人工的成对偏好对比：最好的 judge 一致率 82.99%，分差小于 10 的子集降到 68.57%。"
+  },
+  {
+   "id": "s18",
+   "page": 15,
+   "title": "附录 E.2–E.6 各项补充分析",
+   "from": "Figure 8 measures the fraction of tasks whose weighted Rubric score reaches threshold",
+   "summary": "全对门槛、未满足判据数、融合权重敏感度（判据分与画质分相关 0.630）。可跳过，除非要看分数合成是否稳健。"
+  },
+  {
+   "id": "s19",
+   "page": 19,
+   "title": "附录 E.7–E.8 类别与失败溯源",
+   "from": "Figure 13 extends the five-system comparison in Figure 5a to all thirteen systems",
+   "summary": "类别平衡后排名基本不变；E.8 把失败案例对到具体操作，包括贴图平面造成视角不一致、自检把 150 mm 木腿改成总高度。**必读** E.8。"
+  },
+  {
+   "id": "s20",
+   "page": 22,
+   "title": "附录 E.9 Paired Case Studies",
+   "from": "Both booth outputs pass all binary criteria",
+   "summary": "六个任务的配对案例，对比两个模型的构建过程和得分。可挑一两个看，其余可跳过。"
+  }
+ ],
+ "ver": "v1"
+}

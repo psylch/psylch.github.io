@@ -1,0 +1,635 @@
+{
+ "id": "gdpval",
+ "title": "GDPval",
+ "full": "GDPval: Evaluating AI Model Performance on Real-World Economically Valuable Tasks",
+ "arxiv": "2510.04374",
+ "pdf": "papers/2510.04374.pdf",
+ "meta": "OpenAI · 2025-10 · 正文 9 页 + 附录（共 29 页）",
+ "question": "没有确定性答案的专业交付物怎么评：专家出题、盲评、人机对比？",
+ "tldr": [
+  "**任务 = 请求 + 参考文件 + 人类专家交付物**：44 个职业、1,320 题，每题来自真实工作成果；公开的 gold 子集 220 题。交付物是 docx、xlsx、pptx、CAD、音视频等文件，没有标准答案，所以没有自动 verifier。",
+  "**主指标是专家成对盲评的胜率**：同职业专家看到请求和参考文件，给两份或多份无标签交付物排序，模型的交付物对比人类专家那份。「胜」是更好，「胜或平」是更好或一样好。Claude Opus 4.1 在胜或平口径下是 47.6%。",
+  "**造题的质量靠多轮人审**：专家要求至少 4 年经验（平均 14 年），申请者入选不到 10%；每题平均 5 次人工审查、最少 3 次，前面还有模型预筛。造题和评分都是专家时间，成本很高。",
+  "**自动评分器只是便宜的代理**：基于 GPT-5-high 的成对评分器和人类专家一致率 66%（附录 65.7%），人和人之间是 71%（附录 70.8%）。它偏爱自家模型的输出，容器里只有 Python 和有限的字体、转录能力，220 题里有 12 题无法评。",
+  "**作者承认的局限**：一次性、无交互、上下文给得很全；不含需要私有软件、隐性知识、人际沟通的任务；评分太贵；自动评分器不能替代专家。欠上下文版本的实验显示模型明显变差。"
+ ],
+ "forUs": [
+  "我们的轨迹采集天然产出「请求 + 参考工程 + 专家最终交付物 + 耗时」，和 GDPval 的任务单元同构。专家做的那份工程可以直接当人类基线，耗时和工资可以直接算任务价值。可以套用它的元数据：难度、代表性、完成时间、质量评分。",
+  "UE、Maya、剪映的产物（渲染、视觉效果、剪辑节奏）没有确定性答案，GDPval 给出的路线是：同行专家盲评成对比较，报胜率。bench 上线前要先测专家之间的一致率，GDPval 的 71% 说明这类打分本身就噪，要多采样多评委（它是每题 3 个样本 × 3 个评委）。",
+  "要把盲评变成 RL 的 reward，就得靠 LLM judge 或评分模型。GDPval 的数据是警告：judge 对强模型的一致率会掉，会偏爱同源模型，容器里缺字体、缺运行环境会评错。3D 任务的 judge 需要能渲染、能打开工程，否则看不到真实产物。",
+  "它明确把「需要私有软件」「需要人际沟通」划在范围外，且模型是通过 API + code interpreter 做题，没有 GUI 操作。剪映、UE、Maya 这类专业软件的 GUI 任务正好落在它的空白里。可以借它的造题和审题流程，把评分换成终态检查加专家抽检。",
+  "附录 A.3 的 prompt 要求模型把交付物渲染成图片逐页自检，使用率从 15% 升到 97%。这说明「自己看结果再改」是一个可训练的行为，轨迹数据里应当保留专家检查结果的步骤，而不只是操作步骤。"
+ ],
+ "readFirst": [
+  {
+   "label": "§2.3–2.4 任务和质量控制",
+   "why": "请求、参考文件、交付物的定义，以及每题平均 5 次人审",
+   "note": "n12"
+  },
+  {
+   "label": "§2.5 专家成对盲评",
+   "why": "评分协议本身：盲评、排序、每次评分超过一小时",
+   "note": "n13"
+  },
+  {
+   "label": "§2.5 自动评分器一致率",
+   "why": "66% 对 71%，全篇最该记住的一组数字",
+   "note": "n15"
+  },
+  {
+   "label": "附录 A.2.1 胜率与成本公式",
+   "why": "怎么把胜率换算成「用模型省多少时间和钱」",
+   "note": "n34"
+  },
+  {
+   "label": "附录 A.6.2 评分器偏袒自家模型",
+   "why": "用模型当 judge 的主要风险",
+   "note": "n48"
+  },
+  {
+   "label": "附录 A.5.3 三阶段审查",
+   "why": "occupation 专家要确认「另一位同行能凭这些上下文完成」",
+   "note": "n45"
+  },
+  {
+   "label": "§5 Limitations",
+   "why": "一次性、无交互、无私有软件",
+   "note": "n28"
+  }
+ ],
+ "notes": [
+  {
+   "id": "n01",
+   "page": 1,
+   "cat": "verifier",
+   "from": "Given the complexity of automatically grading these",
+   "to": "head-to-head human expert comparison",
+   "note": "作者一开始就承认这些任务没法自动评分，所以主指标是人类专家一对一比较。同时提供一个实验性的自动评分器，但只覆盖开源的 220 题子集，不作为主评分。"
+  },
+  {
+   "id": "n02",
+   "page": 2,
+   "cat": "task",
+   "from": "tasks are based on actual work product from industry experts",
+   "to": "time and cost required for completion",
+   "note": "任务不是学术式出题，而是来自专家真实做过的工作成果，并且每题带有耗时和成本。这样模型的成绩可以直接换算成时间和钱，而不是一个抽象的分数。"
+  },
+  {
+   "id": "n03",
+   "page": 2,
+   "cat": "task",
+   "from": "Tasks require manipulating a variety of formats",
+   "to": "up to 17 reference files in the gold subset",
+   "note": "输入输出都是真实文件格式，包括 CAD、照片、视频、音频、幻灯片、表格。gold 子集每题最多 17 个参考文件，完整集最多 38 个。这是评「文件交付物」而不是「文本答案」的基础。"
+  },
+  {
+   "id": "n04",
+   "page": 2,
+   "cat": "verifier",
+   "from": "expert graders often consider subjective factors such as structure",
+   "to": "assess automated grader performance",
+   "note": "专家评分不只看对错，还看结构、风格、格式、审美、相关性。作者自己也把这个数据集定位成自动评分器的测试台，因为这些主观维度正是 LLM judge 最难对齐人的地方。"
+  },
+  {
+   "id": "n05",
+   "page": 2,
+   "cat": "verifier",
+   "from": "our primary metric is win rate, which allows for",
+   "to": "increasingly strong models over time",
+   "note": "用胜率而不是通过率，所以没有分数上限：基线以后可以从人类专家换成更强的模型继续比。代价是胜率只有相对意义，换了基线数字就不可比。"
+  },
+  {
+   "id": "n06",
+   "page": 2,
+   "cat": "task",
+   "from": "Selected sectors that contribute over 5% to US GDP",
+   "to": "Value Added by Industry as a Percentage",
+   "note": "选职业是自上而下：先按 2024 年 Q2 各行业增加值占 GDP 超过 5% 选出 9 个行业，再从每个行业里选职业。这样覆盖面有经济学依据，但不是从「模型最可能做得好的任务」出发。"
+  },
+  {
+   "id": "n07",
+   "page": 3,
+   "cat": "task",
+   "key": true,
+   "from": "that contribute most to total wages and compensation",
+   "to": "at least 60% of its component tasks were digital",
+   "note": "**选职业的规则**：每个行业取总薪酬最高、且主要是数字化工作的 5 个职业，合计 44 个职业。「数字化」的判定方法是：把 O*NET 里该职业的每个任务交给 GPT-4o 分成数字或非数字，按相关性、重要性、频率加权，数字任务占比至少 60% 才算。",
+   "infer": "对我们选软件和任务也适用：先用一个可复算的口径定义「哪些工作值得测」，比拍脑袋选更能解释覆盖范围。"
+  },
+  {
+   "id": "n08",
+   "page": 3,
+   "cat": "data",
+   "from": "Experts were required to have a minimum of 4 years",
+   "to": "a training and a quiz to participate",
+   "note": "专家门槛：至少 4 年经验，简历要有认可、晋升、管理经历，平均 14 年；还要通过视频面试、背景调查、培训和测验。为专家付了足够的报酬。造题质量首先靠筛人。"
+  },
+  {
+   "id": "n09",
+   "page": 4,
+   "cat": "task",
+   "key": true,
+   "from": "Each GDPval task consists of two primary components",
+   "to": "a deliverable (work product)",
+   "note": "**任务单元**：一个请求（常带参考文件）加一份交付物（工作成果）。交付物是专家真实做出来的那份，后面既当人类基线，也是评分时对比的对象。没有测试、没有环境、没有参考解脚本。"
+  },
+  {
+   "id": "n10",
+   "page": 4,
+   "cat": "task",
+   "from": "Experts classified their requests against O*NET occupational tasks",
+   "to": "broad and representative coverage across tasks",
+   "note": "每个请求都要归到 O*NET 里该职业的具体任务上，用来控制覆盖。附录 A.4.2 显示 gold 子集覆盖了 208 个不同的 O*NET 任务，占该库全部任务的 14.15%，所以覆盖面远没有「全覆盖」。"
+  },
+  {
+   "id": "n11",
+   "page": 4,
+   "cat": "data",
+   "from": "we asked occupational experts to rate each task on its difficulty",
+   "to": "median hourly wages for the corresponding occupation",
+   "note": "每题让专家自评难度、代表性、完成时间、整体质量；任务的美元价值 = 平均估计耗时 × 该职业工资中位数。耗时是专家估的，不是实测，这是后面成本分析的一个不确定来源。"
+  },
+  {
+   "id": "n12",
+   "page": 4,
+   "cat": "data",
+   "key": true,
+   "from": "Each task received an average of five human",
+   "to": "minimum of three reviews",
+   "note": "**质量控制**：1,320 题都经过模型预筛加多轮人审，每题平均 5 次人工审查，最少 3 次。每轮专家给详细意见，题目修订后再进下一轮。具体三阶段见附录 A.5.3。"
+  },
+  {
+   "id": "n13",
+   "page": 4,
+   "cat": "verifier",
+   "key": true,
+   "from": "we conducted blinded expert pairwise comparisons",
+   "to": "two or more unlabeled work deliverables",
+   "note": "**评分协议**：同职业的专家看到请求和参考文件，对两份或多份无标签交付物排序。评分者和出题者不是同一批人，是另外招来的同职业专家。盲评的目的是消除对「是 AI 还是人」的先入为主。"
+  },
+  {
+   "id": "n14",
+   "page": 4,
+   "cat": "verifier",
+   "from": "On average, grading each comparison for the gold subset",
+   "to": "headline win rates for various models",
+   "note": "每次比较平均要花一个多小时，因为专家要打开文件、对照参考材料并写出理由。书面理由既用来算胜率，也用于后面的失败聚类分析。这就是评分贵的原因。"
+  },
+  {
+   "id": "n15",
+   "page": 4,
+   "cat": "verifier",
+   "key": true,
+   "from": "we trained an experimental grading model to perform pairwise",
+   "to": "inter-rating agreement of 71%",
+   "note": "**自动评分器一致率**：评分器和人类专家一致 66%，比人和人之间的 71% 只低 5 个点。作者说这个评分器「更快更便宜」但「有限」，因此只当代理，不替代专家。",
+   "infer": "判断一个 LLM judge 能不能用，关键是把它和人类评委的一致率与「人和人的一致率」放在一起比，而不是看绝对值。"
+  },
+  {
+   "id": "n16",
+   "page": 5,
+   "cat": "limit",
+   "from": "We aimed to keep comparisons as blind as possible",
+   "to": "identifiable due to stylistic differences",
+   "note": "作者承认盲评并不完全盲：OpenAI 模型爱用破折号，Claude 常用第一人称，Grok 偶尔自称 Grok。文件名里的模型标识被抹掉了，但为保持样本原貌没有改风格和内容。"
+  },
+  {
+   "id": "n17",
+   "page": 5,
+   "cat": "limit",
+   "from": "We sampled Claude via the UI to enable the maximum",
+   "to": "file creation and analysis",
+   "note": "不同厂商的模型出题方式不一样：Claude 通过网页界面采样以使用文件创建功能，OpenAI 模型则开启联网搜索和代码解释器，并预装了一批库。跨厂商比较的是「模型加各自产品能力」，不是同一 harness 下的纯模型对比。"
+  },
+  {
+   "id": "n18",
+   "page": 6,
+   "cat": "result",
+   "key": true,
+   "from": "47.6% of deliverables by Claude Opus 4.1 were graded",
+   "to": "as good as (ties) the human deliverable",
+   "note": "**胜率口径**：47.6% 是「胜加平」，即模型被评为更好或一样好。只算「更好」的胜率要低得多，附录表 2 里 GPT-5 的纯胜率是 39.0%。看数字时一定先确认是哪个口径。"
+  },
+  {
+   "id": "n19",
+   "page": 6,
+   "cat": "verifier",
+   "from": "we sampled each model 3 times for each prompt",
+   "to": "9 comparisons per prompt, per model",
+   "note": "每题每个模型采 3 次，每次由 3 个不同评委评，所以每个模型每题有 9 次比较。多采样加多评委是在压低单个评分的噪声。"
+  },
+  {
+   "id": "n20",
+   "page": 6,
+   "cat": "result",
+   "from": "Performance of OpenAI frontier models increased roughly linearly",
+   "to": "gold subset",
+   "note": "OpenAI 几代前沿模型的成绩随时间大致线性上升。因为不是通过率，没有天花板，所以能看到持续的趋势。"
+  },
+  {
+   "id": "n21",
+   "page": 6,
+   "cat": "result",
+   "from": "while GPT-5 excelled in particular on accuracy",
+   "to": "performing correct calculations",
+   "note": "不同模型赢在不同维度：Claude 胜在审美和格式，GPT-5 胜在准确和遵循指令。在附录里 Claude 在 pdf、xlsx、ppt 等文件类型上更好，GPT-5 在纯文本上更好。综合胜率会掩盖这种分工。"
+  },
+  {
+   "id": "n22",
+   "page": 6,
+   "cat": "data",
+   "from": "an expert human samples from a model, reviews outputs",
+   "to": "the human completes the task themselves",
+   "note": "成本分析的假设场景：专家先让模型生成，自己审，不满意就重来，反复几次后仍不满意就自己做。公式见附录 A.2.1。这里假设「人审得出好坏」，而审本身也要花时间。"
+  },
+  {
+   "id": "n23",
+   "page": 6,
+   "cat": "limit",
+   "from": "We were not able to obtain cost estimates",
+   "to": "for Claude, Gemini, and Grok",
+   "note": "只有 OpenAI 模型有成本数据，所以成本和速度分析只覆盖 GPT-4o、o4-mini、o3、GPT-5，最好的 Claude 不在里面。"
+  },
+  {
+   "id": "n24",
+   "page": 7,
+   "cat": "result",
+   "from": "Claude, Grok, and Gemini most often lost due to",
+   "to": "fewest instruction-following issues",
+   "note": "作者用专家写的理由做聚类，分析输给人的原因：Claude、Grok、Gemini 主要输在没按指令做，GPT-5 主要输在格式错误。Gemini 和 Grok 常承诺交付但没交，或忽略参考数据。聚类标签互斥，理由不清楚的样本留空。"
+  },
+  {
+   "id": "n25",
+   "page": 7,
+   "cat": "data",
+   "from": "Prompting fully eliminated black-square artifacts from GPT-5",
+   "to": "egregious formatting errors in PowerPoint files",
+   "note": "一个通用 prompt（要求渲染成图片检查、避免特殊字符、控制篇幅）就消除了 PDF 里的黑方块，并把 PowerPoint 严重格式错误从 86% 降到 64%。模型检查自己交付物的比例从 15% 升到 97%，胜率提升 5 个百分点。"
+  },
+  {
+   "id": "n26",
+   "page": 7,
+   "cat": "data",
+   "from": "These easy performance gains suggest there are paths",
+   "to": "take full advantage of their multimodal capabilities",
+   "note": "作者的结论是可以通过训练或 scaffolding 让 agent 更仔细、更多利用多模态能力。这是全文最接近 RL 的一句话：失败的主要原因是没检查，而不是不会做。",
+   "infer": "对 GUI/3D 任务，训练信号可以加在「是否打开并查看自己的产物」这类行为上。"
+  },
+  {
+   "id": "n27",
+   "page": 8,
+   "cat": "data",
+   "from": "While human expert comparison is still our recommended method",
+   "to": "automated grader publicly available",
+   "note": "开源的是 220 题的 prompt 和参考文件（已抹去能识别出题专家的信息），不含专家的交付物。作者仍然推荐用人类专家比较，自动评分器只作为可得的代理。公开的评分器也不覆盖全部 gold 题。"
+  },
+  {
+   "id": "n28",
+   "page": 9,
+   "cat": "limit",
+   "key": true,
+   "from": "tasks that involve extensive tacit knowledge",
+   "to": "are out of scope for the current evaluation",
+   "note": "**范围外的任务**：需要大量隐性知识、涉及个人身份信息、必须用专有软件、需要人与人沟通的任务都不在内。专有软件被明确排除，说明它覆盖的是「能用通用工具产出文件」的工作。",
+   "infer": "剪映、UE、Maya 这类专业软件的 GUI 任务正好在它的空白里，我们的 bench 补的就是这一块。"
+  },
+  {
+   "id": "n29",
+   "page": 9,
+   "cat": "limit",
+   "from": "we provide the full context of the task in the prompt",
+   "to": "understand what to work on",
+   "note": "任务是一次性、无交互、给足上下文的。真实工作里「搞清楚要做什么」本身就占很多精力，这里被去掉了。附录 A.2.7 用缩短到 42% 长度的 prompt 测了这一点。"
+  },
+  {
+   "id": "n30",
+   "page": 9,
+   "cat": "limit",
+   "from": "The GDPval full set currently consists of only 44",
+   "to": "30 total tasks per occupation",
+   "note": "每个职业只有 30 题（gold 子集 5 题），是初版的抽样，不能代表整个职业。按职业拆开看胜率时，每格样本很少。"
+  },
+  {
+   "id": "n31",
+   "page": 9,
+   "cat": "limit",
+   "from": "Constructing and running our evaluation is expensive",
+   "to": "a full substitute for industry expert graders",
+   "note": "作者直接说构造和运行评测都很贵，尤其是专家评分。自动评分器是为了降成本，但他们明确不认为它能替代专家。"
+  },
+  {
+   "id": "n32",
+   "page": 12,
+   "cat": "data",
+   "from": "based on validated self-reported time to complete",
+   "to": "median hourly wage for each occupation",
+   "note": "人类成本 = 专家自报并经多名职业审核员校验的耗时 × 该职业工资中位数。220 题平均耗时 404 分钟、成本 361 美元。脚注指出自报耗时可能高估或低估，工资因专家资深也可能低估真实市场价。"
+  },
+  {
+   "id": "n33",
+   "page": 12,
+   "cat": "verifier",
+   "key": true,
+   "from": "how often the model deliverable is rated better than",
+   "to": "by the human expert grader",
+   "note": "**胜率的定义**：模型交付物被人类专家评为比人类交付物更好的频率。平局不计入胜。评分取值 0、0.5、1，所以后面的一致率也把平局算作半分。"
+  },
+  {
+   "id": "n34",
+   "page": 12,
+   "cat": "data",
+   "from": "This proxies the setup where a human tries using",
+   "to": "below their quality bar",
+   "note": "「试一次再修」的总时间 = 模型生成时间 + 专家审阅时间 + (1 − 胜率) × 人类自己做的时间。审阅一个交付物平均 109 分钟、86 美元，比较贵。表 2 里 GPT-5 在这个口径下只有 1.12 倍速度、1.18 倍成本节省，GPT-4o 甚至低于 1 倍。"
+  },
+  {
+   "id": "n35",
+   "page": 13,
+   "cat": "limit",
+   "from": "When incorporating time to review and redo work",
+   "to": "payoff from using a model shrinks",
+   "note": "只看模型生成时间，节省达到几十到几千倍；加上审阅和重做之后，GPT-5 的收益缩到 1.1 到 1.6 倍。作者还承认没算人类交付物本身也要被审、人类交付物也可能不合格，以及灾难性错误的代价。"
+  },
+  {
+   "id": "n36",
+   "page": 13,
+   "cat": "limit",
+   "from": "We are over-penalizing the model here",
+   "to": "more comfortable with the task",
+   "note": "作者承认这个估算对模型偏苛刻：重试时专家会调整 prompt，胜率会升，审阅也会越来越快。所以表里的节省是偏保守的下限，不是实测。"
+  },
+  {
+   "id": "n37",
+   "page": 16,
+   "cat": "result",
+   "from": "Performance varies across formats, with Claude achieving the best results",
+   "to": "except pure text",
+   "note": "按交付物文件类型拆分，Claude 在除纯文本外的所有类型上最好。不同文件类型对应的职业也不同，所以这不能完全归因于模型的视觉能力。"
+  },
+  {
+   "id": "n38",
+   "page": 17,
+   "cat": "result",
+   "from": "The most common categorization of a GPT-5 model failure",
+   "to": "marked as catastrophic",
+   "note": "输给人的 GPT-5 样本再由其他专家按严重度分类：灾难性（有害或严重错误）、差（不可用）、可接受但略逊。最多的是「可接受但略逊」，约 29% 是差或灾难性，约 3% 是灾难性。另有 23% 的评分认为模型其实更好，作者说这大致对应人类评分者之间的分歧水平。"
+  },
+  {
+   "id": "n39",
+   "page": 17,
+   "cat": "result",
+   "from": "These shorter prompts omitted additional context such as where",
+   "to": "had to figure it out",
+   "note": "做了一个欠上下文版本：prompt 缩到原来的 42% 长度，去掉数据在哪里、怎么做、格式要求。GPT-5 的成绩变差，主要卡在找不到需要的上下文。这个实验在较早的 gold 子集版本上跑，所以绝对数字和正文不可比。"
+  },
+  {
+   "id": "n40",
+   "page": 18,
+   "cat": "data",
+   "from": "Convert all visual deliverables to PNGs using LibreOffice",
+   "to": "each page or slide is a separate PNG",
+   "note": "prompt 原文，核心是强制五步检查：转成 PNG、逐页看图找裁切重叠、写程序检查空白页、对照任务要求、确认提交的文件无多余。最后一行还要求输出 CONFIDENCE[XX]（0 到 100）。同一页还描述了 best-of-4：用 GPT-5 当评委从 4 个提交里选一个。"
+  },
+  {
+   "id": "n41",
+   "page": 20,
+   "cat": "data",
+   "from": "Occupational experts conducting human grading rated the specificity",
+   "to": "tasks were rated as well-specified",
+   "note": "评分的专家同时给每个 prompt 的明确程度打标：gold 子集 89.07% 是「写得恰当」，8.28% 欠明确，2.66% 过度明确。完整集比例相近。这是对「题目本身有没有歧义」的一个量化抽检。"
+  },
+  {
+   "id": "n42",
+   "page": 21,
+   "cat": "data",
+   "from": "Less than 10% of applicants were selected to contribute",
+   "to": "Each occupation had a minimum of 5 qualified professionals",
+   "note": "专家申请者入选不到 10%；每个职业至少有 5 位合格专业人士，并要有该职业和行业的具体经验，同时兼顾公司规模、地点、细分方向的多样性。"
+  },
+  {
+   "id": "n43",
+   "page": 21,
+   "cat": "data",
+   "from": "We used OpenAI models to automatically screen each task submission",
+   "to": "no deliverable and reference files attached",
+   "note": "模型预筛检查四件事：任务是否属于所选职业、是否主要在电脑上完成、复杂度是否太低（像 5 分钟的活）、有没有交付物和参考文件。专家把模型意见当建议不当指令，最终责任在专家，模型不自动改题。"
+  },
+  {
+   "id": "n44",
+   "page": 21,
+   "cat": "data",
+   "from": "Reviewers were primarily sourced from the original expert pool",
+   "to": "promoted to reviewers",
+   "note": "审题人从造题专家里提拔：研究员先人工审所有题，找出稳定出好题的人，培训后升为审题人，最强的再升为主审并负责带新人。研究团队还定期抽查审题人签过字的题。"
+  },
+  {
+   "id": "n45",
+   "page": 21,
+   "cat": "data",
+   "key": true,
+   "from": "An occupation-specific reviewer assessed the representativeness of the task",
+   "to": "complete with the provided context",
+   "note": "**三阶段审查的第二步**：同职业的审题人要确认两件事，题对该职业有代表性，并且另一位同行仅凭给出的上下文就能完成。第一步是通才审题人检查是否符合项目要求，第三步由另一位专家反复提意见直到达标。",
+   "infer": "「另一位同行能凭这些材料做出来」相当于它版本的 Solvability，只是由人而不是参考解脚本来证明。"
+  },
+  {
+   "id": "n46",
+   "page": 22,
+   "cat": "verifier",
+   "from": "where 1 indicates preference for the model deliverable",
+   "to": "0.5 indicates a tie",
+   "note": "一致率的定义：评分取 0、0.5、1，两个评分之间的一致度是 1 减去差的绝对值。人与人、人与评分器都用这个口径。作者说 Cohen's kappa 等统计量不太适用，因为这里是有序的三档分数。"
+  },
+  {
+   "id": "n47",
+   "page": 22,
+   "cat": "verifier",
+   "from": "average human-automated grader agreement was 65.7%",
+   "to": "inter-rater agreement was 70.8%",
+   "note": "三轮评分器测试的平均值：人和评分器 65.7%，人和人 70.8%。置信区间用对样本重采样的 bootstrap 算。两个人只有约七成一致，说明这个任务本身很噪。"
+  },
+  {
+   "id": "n48",
+   "page": 22,
+   "cat": "verifier",
+   "key": true,
+   "from": "Our automated grader, based on GPT-5-high, shows lower correlation",
+   "to": "often favor their own responses",
+   "note": "**评分器的偏差**：评分器基于 GPT-5-high，对能力强的 OpenAI 模型的输出和人类的一致率更低，作者引用研究解释为模型偏爱自己的输出。两种一致率在弱模型上最高，因为弱模型的输出更容易和人类区分，也更少被选中。",
+   "infer": "把 LLM judge 当 RL reward 时，judge 和被训模型同源会放大这种偏好，需要用异源 judge 或人工抽检校准。"
+  },
+  {
+   "id": "n49",
+   "page": 23,
+   "cat": "limit",
+   "from": "Tasks which strictly require internet",
+   "to": "properly test",
+   "note": "评分器的四个限制：没有联网（需要上网下载的题没法评）、容器里只能跑 Python（3 道软件开发题因需要其他语言和依赖被排除）、有些字体包缺失会渲染不同、语音转文字能力有限且不擅长非人声。因此 220 题里 12 题标为无法评。"
+  },
+  {
+   "id": "n50",
+   "page": 23,
+   "cat": "data",
+   "from": "To ensure the model can process a wide variety of file types",
+   "to": "base production Docker image",
+   "note": "评分容器预装了处理文件的库，名单里有 opencv、moviepy、librosa、trimesh 等；额外装了 libreoffice、cadquery、pedalboard 等，并在 prompt 里告诉模型可用。评分的能力边界就是这个镜像的边界。"
+  }
+ ],
+ "sections": [
+  {
+   "id": "s01",
+   "page": 1,
+   "title": "摘要",
+   "from": "We introduce GDPval, a benchmark evaluating AI model capabilities",
+   "summary": "概括 44 个职业、9 个行业、专家平均 14 年经验，前沿模型成绩大致线性上升，并开源 220 题 gold 子集和自动评分服务。可快速扫一遍。"
+  },
+  {
+   "id": "s02",
+   "page": 1,
+   "title": "§1 Introduction",
+   "from": "There is growing debate about how increasingly capable AI models",
+   "summary": "动机是直接测模型能力，而不是看采用率这类滞后指标。列出六个特点：真实、覆盖广、多模态、主观、无上限、长周期。**必读**第二页的六条，是整个 bench 的设计目标。"
+  },
+  {
+   "id": "s03",
+   "page": 2,
+   "title": "§2 Task Creation",
+   "from": "We first identify the sectors that contribute most to U.S. GDP",
+   "summary": "一句话的总览：先选对 GDP 贡献最大的行业，再选其中收入最高的知识工作职业。无需细读。"
+  },
+  {
+   "id": "s04",
+   "page": 2,
+   "title": "§2.1 Prioritizing Occupations",
+   "from": "GDPval covers tasks from 9 sectors and 44 occupations that collectively",
+   "summary": "选职业的流程：行业占 GDP 超过 5%，每行业取总薪酬最高且主要是数字化工作的职业，数字化用 GPT-4o 对 O*NET 任务分类、占比至少 60%。想学怎么定义覆盖范围可细读。"
+  },
+  {
+   "id": "s05",
+   "page": 3,
+   "title": "§2.2 Expert Recruitment",
+   "from": "We recruited expert industry professionals to create realistic tasks",
+   "summary": "专家至少 4 年经验，平均 14 年，要过视频面试、背景调查、培训和测验。想学怎么招专家造题可读，雇主名单可跳过。"
+  },
+  {
+   "id": "s06",
+   "page": 4,
+   "title": "§2.3 Task Creation",
+   "from": "Each GDPval task consists of two primary components",
+   "summary": "**必读**：任务单元是请求加交付物，请求归到 O*NET 任务，专家自评难度和耗时，美元价值由耗时乘工资得出。"
+  },
+  {
+   "id": "s07",
+   "page": 4,
+   "title": "§2.4 Task Quality Control Pipeline",
+   "from": "All 1,320 tasks in the full GDPval set went through",
+   "summary": "**必读**：模型预筛加多轮人审，每题平均 5 次审查，最少 3 次。很短，细节在附录 A.5。"
+  },
+  {
+   "id": "s08",
+   "page": 4,
+   "title": "§2.5 Human Expert Grading and Automated Grading",
+   "from": "To grade the 220 open-sourced gold subset, we conducted",
+   "summary": "**必读**：同职业专家成对盲评，每次评分超过一小时；自动评分器一致率 66%，人与人 71%。全篇评分协议的核心。"
+  },
+  {
+   "id": "s09",
+   "page": 5,
+   "title": "§3.1 Headline Results",
+   "from": "We evaluated GPT-4o, o4-mini, o3, GPT-5, Claude Opus 4.1",
+   "summary": "7 个模型的盲评结果，Claude Opus 4.1 最好，胜或平 47.6%。脚注里写了盲评不完全盲、各厂商采样方式不同，读脚注比读结果更有用。"
+  },
+  {
+   "id": "s10",
+   "page": 6,
+   "title": "§3.2 Speed and Cost Comparison",
+   "from": "We analyzed several scenarios to understand the potential speed",
+   "summary": "用「试模型，不行自己做」的场景估算节省，结论是加上审阅和重做后有节省但不大。推导在附录 A.2.1，想学成本怎么算可读。"
+  },
+  {
+   "id": "s11",
+   "page": 7,
+   "title": "§3.3 Model Strengths and Weaknesses",
+   "from": "We built a clustering pipeline to analyze why experts",
+   "summary": "用专家写的理由聚类失败原因：Claude、Grok、Gemini 多输在没按指令做，GPT-5 多输在格式。值得看这种用评分理由做失败分析的方法。"
+  },
+  {
+   "id": "s12",
+   "page": 7,
+   "title": "§3.4 Increasing Reasoning Effort and Scaffolding",
+   "from": "To understand the impact of reasoning effort on model performance",
+   "summary": "**必读**：加推理强度、通用检查 prompt 和 best-of-4 都能提分，渲染后自检的使用率从 15% 升到 97%。是全文最接近训练方向的一节。"
+  },
+  {
+   "id": "s13",
+   "page": 8,
+   "title": "§4 Open-Sourcing",
+   "from": "We open-source the prompts and reference files in our",
+   "summary": "开源 220 题的 prompt 和参考文件，并提供评分网站，但不覆盖全部题目。可快速扫。"
+  },
+  {
+   "id": "s14",
+   "page": 9,
+   "title": "§5 Limitations",
+   "from": "The GDPval full set currently consists of only 44 occupations",
+   "summary": "**必读**：数据量小、不含专有软件和人际沟通、一次性无交互、评分器有限、成本高。我们要做的专业软件 GUI 任务就在它的空白里。"
+  },
+  {
+   "id": "s15",
+   "page": 12,
+   "title": "附录 A.2.1 Speed and Cost Analysis",
+   "from": "We use the following definitions",
+   "summary": "给出人类耗时 404 分钟、成本 361 美元，审阅 109 分钟、86 美元，以及「试 1 次」「试 n 次」的公式。想复用成本模型可细读，其余可跳过。"
+  },
+  {
+   "id": "s16",
+   "page": 17,
+   "title": "附录 A.2.7 Under-contextualized GDPval",
+   "from": "To assess how models handle task ambiguity, we created",
+   "summary": "把 prompt 缩到 42% 长度后 GPT-5 变差。值得读，因为这是少数测「不给全上下文」的实验。"
+  },
+  {
+   "id": "s17",
+   "page": 18,
+   "title": "附录 A.3 Prompt-Tuning",
+   "from": "Here is the prompt we give the agent to elicit capabilities",
+   "summary": "提示词原文，强制五步渲染检查。想抄自检 prompt 可读，其余可跳过。"
+  },
+  {
+   "id": "s18",
+   "page": 20,
+   "title": "附录 A.4.3 Task Specification",
+   "from": "Occupational experts conducting human grading rated the specificity",
+   "summary": "gold 子集 89.07% 的题被评为写得恰当，8.28% 欠明确。很短，可作为题目歧义的抽检范例。"
+  },
+  {
+   "id": "s19",
+   "page": 21,
+   "title": "附录 A.5 Further Detail on Task Quality Control",
+   "from": "We used OpenAI models to automatically screen each task submission",
+   "summary": "**必读**：模型预筛的检查项、审题人从造题专家里提拔的机制，以及三阶段审查。想学怎么审题可细读。"
+  },
+  {
+   "id": "s20",
+   "page": 21,
+   "title": "附录 A.6.1 Automated Grader Consensus Metrics",
+   "from": "To measure automated grader performance, we measured the agreement rate",
+   "summary": "一致率定义为 1 减去评分差的绝对值，评分取 0、0.5、1。数学很少，想学怎么报告评分器一致率可读。"
+  },
+  {
+   "id": "s21",
+   "page": 22,
+   "title": "附录 A.6.2–A.6.3 Grader Correlation and Limitations",
+   "from": "In the open-source set we mark 12 out of 220 tasks",
+   "summary": "**必读**：评分器平均一致率 65.7%、人与人 70.8%，评分器偏爱自家模型的输出；12 题因联网、仅 Python、字体、转录限制无法评。想用 LLM judge 前必读。"
+  },
+  {
+   "id": "s22",
+   "page": 24,
+   "title": "附录 A.7 Selecting Occupations",
+   "from": "We assigned occupations to sectors by using the 2023 BLS",
+   "summary": "职业选择的细节：行业归属、831 个职业去掉 All Other 后剩 761 个、数字化加权算法、缺失数据处理。用于复现，可跳过。"
+  }
+ ],
+ "ver": "v1"
+}

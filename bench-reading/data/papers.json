@@ -1,0 +1,108 @@
+[
+ {
+  "group": "A · 现代主流 bench：一个好 bench 由什么构成",
+  "papers": [
+   {
+    "id": "terminal-bench",
+    "title": "Terminal-Bench 2.0",
+    "arxiv": "2601.11868",
+    "question": "一个 agent 任务的最小完整单元是什么，任务怎么审才算合格？",
+    "ready": true
+   },
+   {
+    "id": "swe-bench-pro",
+    "title": "SWE-bench Pro",
+    "arxiv": "2509.16941",
+    "question": "怎么防污染和过拟合：私有集、留出集、真实仓库取题。",
+    "ready": true
+   },
+   {
+    "id": "osworld-2",
+    "title": "OSWorld 2.0",
+    "arxiv": "2606.29537",
+    "question": "长程 GUI 任务怎么评：加权 checkpoint、部分分、动态环境。",
+    "ready": true
+   },
+   {
+    "id": "gdpval",
+    "title": "GDPval",
+    "arxiv": "2510.04374",
+    "question": "没有确定性答案的专业交付物怎么评：专家出题、盲评、人机对比。",
+    "ready": true
+   },
+   {
+    "id": "vitabench-2",
+    "title": "VitaBench 2.0（美团）",
+    "arxiv": "2605.27141",
+    "question": "长期、动态的用户交互怎么评：用户模拟、偏好演化、工具调用。",
+    "ready": true
+   }
+  ]
+ },
+ {
+  "group": "B · 后训练与 RL：bench、环境、verifier 怎么变成模型能力",
+  "papers": [
+   {
+    "id": "kimi-k3",
+    "title": "Kimi K3",
+    "arxiv": "2607.24653",
+    "question": "一个前沿模型的后训练实际怎么做：RL 在三个领域各用什么环境、任务和奖励。",
+    "ready": true
+   },
+   {
+    "id": "ui-tars-2",
+    "title": "UI-TARS-2",
+    "arxiv": "2509.02544",
+    "question": "CUA 的完整后训练配方：数据飞轮、SFT、多轮 RL 各吃什么数据。",
+    "ready": true
+   },
+   {
+    "id": "cua-gym",
+    "title": "CUA-Gym",
+    "arxiv": "2605.25624",
+    "question": "训练环境怎么批量造：任务、状态、reward 一起生成，防 reward hacking。",
+    "ready": true
+   },
+   {
+    "id": "echoverse",
+    "title": "Echoverse",
+    "arxiv": "2607.28074",
+    "question": "环境和 verifier 上线后怎么迭代：用 rollout 反过来修。",
+    "ready": true
+   }
+  ]
+ },
+ {
+  "group": "C · 3D / UE 与 verifier 专题",
+  "papers": [
+   {
+    "id": "craftbench-ue",
+    "title": "CraftBench-UE",
+    "arxiv": "2609.23142",
+    "question": "UE 里「做对了」怎么确定性地判。",
+    "ready": true
+   },
+   {
+    "id": "blenderworld",
+    "title": "BlenderWorld",
+    "arxiv": "2610.23986",
+    "question": "3D 创作质量怎么拆成二值判据，agent judge 怎么查工程文件。",
+    "ready": true
+   },
+   {
+    "id": "vericua",
+    "title": "VeriCUA（探索式）",
+    "arxiv": "2610.40578",
+    "question": "写不出确定性检查时，verifier 自己当 agent 去取证。",
+    "ready": true
+   },
+   {
+    "id": "vericua-reward",
+    "title": "VeriCUA（奖励版）",
+    "arxiv": "2610.26469",
+    "question": "verifier 当 RL 奖励来源时要多可靠，怎么训练一个会主动取证的 verifier。",
+    "ready": true
+   }
+  ]
+ }
+]

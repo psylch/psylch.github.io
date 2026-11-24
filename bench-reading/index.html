@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bench 精读</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400;1,600&family=Noto+Serif+SC:wght@400;500;700&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="mei">
+  <p>十三篇论文，答四问：bench 怎么造，verifier 怎么设计，好数据长什么样，这些东西怎么进入后训练。</p>
+  <p>句末小字是出处，点开直达原文那一句。凡标「推断」「按」的，是我的引申，不是论文原话。</p>
+</div>
+<div class="shelf ov">
+  <h1>Bench 精读<em>Lectio Benchmarkorum</em><span class="yin"><b>精</b><b>读</b><b>之</b><b>印</b></span></h1>
+
+  <h2 class="lab">先看结论</h2>
+  <ol class="top">
+    <li><b>只查终态，不查过程。</b>判分对象是任务结束后留下的状态和文件，不是点击序列或终端输出。所以 GUI、MCP、代码三种接口可以共用一套 verifier。<a r="terminal-bench#n06">Terminal-Bench</a> <a r="osworld-2#n13">OSWorld 2.0</a> <a r="cua-gym#n43">CUA-Gym</a> <a r="kimi-k3#n34">Kimi K3</a></li>
+    <li><b>能用程序判的不用模型判。</b>必须用模型时，只让它判二值条目，并且先和人工对过一致率。<a r="craftbench-ue#n20">CraftBench-UE</a> <a r="osworld-2#n14">OSWorld 2.0</a> <a r="blenderworld#n16">BlenderWorld</a> <a r="gdpval#n15">GDPval</a></li>
+    <li><b>verifier 有两种错，都要审。</b>没做对却给分（假阳性），做对了却不给分（假阴性）。前者让分数虚高，后者在 RL 里等于惩罚正确行为。<a r="terminal-bench#n14">Terminal-Bench</a> <a r="swe-bench-pro#n42">SWE-bench Pro</a> <a r="osworld-2#n05">OSWorld 2.0</a> <a r="vericua-reward#n45">VeriCUA 奖励版</a></li>
+    <li><b>一道题的准入线：参考解必须通过，什么都不做必须失败，再放一个专门作弊的 agent 去试。</b><a r="terminal-bench#n19">Terminal-Bench</a> <a r="terminal-bench#n47">作弊 agent</a> <a r="craftbench-ue#n26">CraftBench-UE</a> <a r="cua-gym#n35">CUA-Gym</a></li>
+    <li><b>造答案的和写判分的要隔开。</b>同一方既造标准答案又写判分，判分就会去核对「我是怎么造的」而不是「任务做成没有」。<a r="cua-gym#n10">CUA-Gym</a> <a r="kimi-k3#n35">Kimi K3</a> <a r="terminal-bench#n12">Terminal-Bench</a></li>
+    <li><b>测评用的 verifier 和训练用的 reward 不是一回事。</b>测评要精确、可人工逐题审；训练要量大、信号密、经得住策略钻空子。<a r="osworld-2#n37">OSWorld 2.0</a> <a r="echoverse#n42">Echoverse</a> <a r="vericua-reward#n17">VeriCUA 奖励版</a></li>
+    <li><b>bench 和环境是要持续修的东西。</b>模型跑出来的失败里，有相当一部分是环境、任务或判分的错。<a r="echoverse#n35">Echoverse</a> <a r="vericua#n42">VeriCUA</a> <a r="terminal-bench#n32">Terminal-Bench</a></li>
+  </ol>
+
+  <div class="two">
+    <section>
+      <h2 class="lab">bench 怎么造</h2>
+      <ul>
+        <li><b>任务单元。</b>通用版是四件套：环境、指令、测试、人写的参考解 <a r="terminal-bench#n04">TB</a>。UE 版多两样：可写范围和引擎版本 <a r="craftbench-ue#n09">CraftBench</a>。训练环境版是指令、初始状态、reward 函数一起生成 <a r="cua-gym#n01">CUA-Gym</a>。</li>
+        <li><b>题从哪来。</b>众包后筛掉六成 <a r="terminal-bench#n10">TB</a>；真实 commit 加人工补全描述 <a r="swe-bench-pro#n10">SWE Pro</a>；内部标注员一手包办 <a r="osworld-2#n06">OSWorld 2.0</a>；行业专家的真实工作成果 <a r="gdpval#n09">GDPval</a>；人定画像和偏好、模型合成历史 <a r="vitabench-2#n27">VitaBench</a>。</li>
+        <li><b>规模都不大。</b>89、108、70、223 题。质量靠审：每题约 3 小时 <a r="terminal-bench#n18">TB</a>，每题平均 5 次人审 <a r="gdpval#n12">GDPval</a>，三层质检 <a r="osworld-2#n16">OSWorld 2.0</a>。</li>
+        <li><b>把想测的能力隔离出来。</b>埋两类干扰项，只有用上偏好才能选对 <a r="vitabench-2#n35">VitaBench</a>；同一玩法出 C++ 和 Blueprint 两个版本 <a r="craftbench-ue#n33">CraftBench</a>；去掉人工补全做消融 <a r="swe-bench-pro#n37">SWE Pro</a>。</li>
+        <li><b>防污染。</b>选 copyleft 仓库、买私有代码、留一个从不公开成绩的留出集 <a r="swe-bench-pro#n05">SWE Pro</a> <a r="swe-bench-pro#n03">三集划分</a>。只放 canary 字符串基本没用 <a r="terminal-bench#n40">TB</a>。</li>
+        <li><b>难度要实测。</b>人估的难度和模型实测难度只有中等相关 <a r="terminal-bench#n33">TB</a>。</li>
+      </ul>
+    </section>
+    <section>
+      <h2 class="lab">verifier 怎么设计</h2>
+      <ul>
+        <li><b>第一档：确定性终态检查。</b>容器里跑测试 <a r="terminal-bench#n06">TB</a>，比较应用状态的差异 <a r="cua-gym#n14">CUA-Gym</a>，把数据库当状态 <a r="echoverse#n06">Echoverse</a>，引擎里跑断言 <a r="craftbench-ue#n17">CraftBench</a>。</li>
+        <li><b>第二档：拆成 checkpoint 给部分分。</b>平均每题 27.25 个，同时报全过率和部分分 <a r="osworld-2#n12">OSWorld 2.0</a>。</li>
+        <li><b>第三档：二值判据加 judge。</b>判据带原文出处，按证据类型分给看图的 judge 和能打开工程的 judge <a r="blenderworld#n15">BlenderWorld</a> <a r="blenderworld#n17">Agent judge</a>。</li>
+        <li><b>第四档：verifier 自己去取证。</b>agent 说「做完了」不算证据，要有实际读到的文件或状态 <a r="vericua#n15">VeriCUA</a> <a r="vericua#n16">判定规则</a>；检查值不值得做要执行了才知道 <a r="vericua-reward#n10">奖励版</a>。</li>
+        <li><b>第五档：专家盲评。</b>最贵，用在没有标准答案的交付物上 <a r="gdpval#n13">GDPval</a>。</li>
+        <li><b>行为要在运行时查。</b>过了资产检查的 Blueprint，四成到一半在运行时断言上失败 <a r="craftbench-ue#n04">CraftBench</a> <a r="craftbench-ue#n32">对照</a>。</li>
+        <li><b>agent 的自检不能当验收。</b>它会改写自己的检查目标 <a r="blenderworld#n48">BlenderWorld</a>，也更爱查资产而不是运行状态 <a r="craftbench-ue#n35">CraftBench</a>。</li>
+        <li><b>judge 要报一致率。</b>90% <a r="terminal-bench#n36">TB</a>；两个作品接近时掉到 68.57% <a r="blenderworld#n44">BlenderWorld</a>；偏爱自家模型 <a r="gdpval#n48">GDPval</a>。</li>
+        <li><b>终态评分看不出绕路。</b>约 14% 的轨迹去读隐藏状态，约 33% 绕过界面 <a r="osworld-2#n28">OSWorld 2.0</a>。</li>
+      </ul>
+    </section>
+    <section>
+      <h2 class="lab">好数据长什么样</h2>
+      <ul>
+        <li><b>带着能跑的判分。</b>一条训练数据合格的操作定义：目标状态判 1.0，初始状态判 0.0，判分代码里没有偷懒写法 <a r="cua-gym#n35">CUA-Gym</a>。</li>
+        <li><b>思考是当场录的。</b>先录操作、事后补推理这条路行不通，所以让标注员边做边说 <a r="ui-tars-2#n12">UI-TARS-2</a>。</li>
+        <li><b>贴着当前模型会走到的状态。</b>模型提候选动作，人接受或改写 <a r="ui-tars-2#n19">UI-TARS-2</a>。</li>
+        <li><b>按质量分流，不是一刀切丢弃。</b>通过校验的进 SFT，没通过的回到前面的预训练阶段 <a r="ui-tars-2#n08">UI-TARS-2</a>。</li>
+        <li><b>真值由人定，体量由模型补。</b><a r="vitabench-2#n27">VitaBench</a> <a r="vitabench-2#n31">防泄露审查</a></li>
+        <li><b>过滤要有账。</b>投票拒约 3,100 条，实跑再拒 1,278 条，留下 32,112 条 <a r="cua-gym#n40">CUA-Gym</a>。</li>
+        <li><b>环境要「深」。</b>工作流能端到端走通并留下可查的痕迹 <a r="echoverse#n11">Echoverse</a>。在浅环境上训练，真实网站成绩反而下降 <a r="echoverse#n29">结果</a>。</li>
+        <li><b>环境多样性的证据还弱。</b>论文自己的对照里，翻倍轨迹量的提升更大 <a r="cua-gym#n27">CUA-Gym</a>。</li>
+        <li class="inf"><span>推断</span>人类专家轨迹的位置在冷启动：SFT 数据、参考解、人类耗时基线。RL 阶段缺的不是更多轨迹，而是环境和 verifier。</li>
+      </ul>
+    </section>
+    <section>
+      <h2 class="lab">RL 后训练入门</h2>
+      <ul>
+        <li><b>几个词。</b>被训练的模型叫 policy；它完整做一遍任务叫 rollout；做完得到的分数叫 reward；模型钻判分漏洞拿高分叫 reward hacking。</li>
+        <li><b>三段流程。</b>SFT 用示范数据给一个能用的起点，RL 在环境里反复试并按 reward 更新，最后把多个专家模型合并成一个 <a r="kimi-k3#n10">Kimi K3</a> <a r="ui-tars-2#n34">UI-TARS-2</a>。</li>
+        <li><b>reward 的三个来源。</b>确定性规则或 verifier <a r="kimi-k3#n30">K3</a> <a r="ui-tars-2#n26">UI-TARS-2</a>；让模型当评委按 rubric 比较 <a r="kimi-k3#n19">K3</a>；让模型看轨迹判成败 <a r="ui-tars-2#n28">UI-TARS-2</a>。</li>
+        <li><b>长任务的 reward 太稀。</b>五十步只得到一比特信号 <a r="echoverse#n42">Echoverse</a>。办法有：加逐步打分但终态说了算 <a r="echoverse#n44">Echoverse</a>；预训练一个估值模型 <a r="ui-tars-2#n32">UI-TARS-2</a>；蒸馏时逐 token 给信号 <a r="kimi-k3#n22">K3</a>。</li>
+        <li><b>reward 可以直接表达行为要求。</b>超出 token 预算就给 −1 <a r="kimi-k3#n17">K3</a>；探查后判对比直接判对少给一点，教会 verifier 什么时候才该探查 <a r="vericua-reward#n43">奖励表</a>。</li>
+        <li><b>防 reward hacking 靠结构。</b>agent 和 verifier 隔离，另设隐藏 verifier，限制提交次数 <a r="kimi-k3#n35">K3</a>；沙箱要防的是模型本身 <a r="kimi-k3#n38">K3</a>。训练曲线平稳只是旁证 <a r="cua-gym#n23">CUA-Gym</a>。</li>
+        <li><b>别过拟合某一家工具。</b>训练时随机组合工具接口和提示 <a r="kimi-k3#n25">K3</a>。</li>
+        <li><b>verifier 本身也可以训。</b>提示出来的 judge 卡在 68% 到 70% <a r="vericua-reward#n02">奖励版</a>，训练后能当更好的 reward <a r="vericua-reward#n34">下游效果</a>。</li>
+        <li class="inf"><span>说明</span>头部闭源实验室不公开自己的配方。这一节来自 Kimi K3、UI-TARS-2 等公开报告，它们没给任务数量、奖励权重、作弊发生率这类关键数字。</li>
+      </ul>
+    </section>
+  </div>
+
+  <h2 class="lab">给 CUA + UE bench 的设计建议 <span class="rg">推断</span></h2>
+  <ol class="adv">
+    <li><b>任务包六样：</b>起始工程、指令、可写范围、引擎版本、verifier、参考解。参考解可以直接取专家轨迹结束时的工程。<a r="craftbench-ue#n09">依据</a></li>
+    <li><b>评落盘的工程：</b>把允许改动的文件拷进全新工程副本，重建后再判。编辑器里没保存的状态不算。<a r="craftbench-ue#n01">依据</a></li>
+    <li><b>三层确定性检查：</b>能否构建；无界面加载资产查结构；固定步长运行后查行为断言。<a r="craftbench-ue#n18">资产</a> <a r="craftbench-ue#n45">确定性</a></li>
+    <li><b>视觉质量另走一条线：</b>二值判据带出处，judge 能打开工程而不只是看渲染图，并报它和人的一致率。<a r="blenderworld#n04">依据</a> <a r="blenderworld#n43">一致性</a></li>
+    <li><b>长任务拆 checkpoint：</b>同时报全过率和部分分，避免「做对大半」和「完全没做」得一样的分。<a r="osworld-2#n12">依据</a></li>
+    <li><b>准入四步：</b>参考解通过；起始工程失败；作弊 agent 跑一遍；多个强模型试跑后做失败归因。<a r="terminal-bench#n21">归因</a></li>
+    <li><b>接口不限，但当变量记录：</b>文件加 shell、不同 MCP、GUI 的成绩差别很大，也要另外审计绕路行为。<a r="craftbench-ue#n27">依据</a> <a r="ui-tars-2#n05">混合环境</a></li>
+    <li><b>从第一天留私有集。</b><a r="swe-bench-pro#n24">依据</a></li>
+    <li><b>还没有现成答案的三件事：</b>需要交互拨动控件才能判的质量 <a r="blenderworld#n32">BlenderWorld</a>；UE 这类重型应用的并行评测成本；渲染和物理的非确定性之外的手感类判断。</li>
+  </ol>
+
+  <h2 class="lab">横向对比</h2>
+  <table class="cmp">
+    <thead><tr><th>论文</th><th>任务来源</th><th>规模</th><th>怎么判分</th><th>防作弊 / 防污染</th><th>主要短板</th></tr></thead>
+    <tbody>
+      <tr><td><a href="reader.html?id=terminal-bench">Terminal-Bench 2.0</a></td><td>众包 229 题筛选</td><td>89 题</td><td>容器终态上跑测试</td><td>测试不进镜像，作弊 agent，canary</td><td>没有私有集，允许联网</td></tr>
+      <tr><td><a href="reader.html?id=swe-bench-pro">SWE-bench Pro</a></td><td>真实 commit 加人工补全</td><td>1,865 题（731 / 276 / 858）</td><td>原仓库单元测试</td><td>copyleft 仓库，私有商业集，留出集</td><td>测试会冤杀不同解法</td></tr>
+      <tr><td><a href="reader.html?id=osworld-2">OSWorld 2.0</a></td><td>内部标注员为主</td><td>108 题</td><td>终态 checkpoint，LLM 判分占 11.53%</td><td>三层质检，审计四类入口</td><td>题少、构造贵，不是为 RL 设计</td></tr>
+      <tr><td><a href="reader.html?id=gdpval">GDPval</a></td><td>行业专家的真实工作</td><td>1,320 题（公开 220）</td><td>专家成对盲评</td><td>盲评，多轮人审</td><td>一次性、无交互，评分贵</td></tr>
+      <tr><td><a href="reader.html?id=vitabench-2">VitaBench 2.0</a></td><td>人工画像加模型合成历史</td><td>56 用户 819 任务</td><td>人写二值 rubric，gpt-4.1 判</td><td>削弱的用户模拟器，两类干扰项</td><td>没有状态检查，未报 judge 一致率</td></tr>
+      <tr><td><a href="reader.html?id=kimi-k3">Kimi K3</a></td><td>按图采样加真实材料合成</td><td>未给</td><td>规则、独立 verifier、模型评委</td><td>隔离，隐藏 verifier，限次提交，微 VM</td><td>没给任务量和作弊率</td></tr>
+      <tr><td><a href="reader.html?id=ui-tars-2">UI-TARS-2</a></td><td>人类出声思考加模型自产</td><td>未给</td><td>脚本读游戏变量、LLM judge、模型判成败</td><td>人工抽查</td><td>模型判成败的假阳性偏高</td></tr>
+      <tr><td><a href="reader.html?id=cua-gym">CUA-Gym</a></td><td>生成方和判分方对抗合成</td><td>32,112 条，110 个环境</td><td>比较状态差异的 reward 函数</td><td>信息隔离，五条硬标准，两道筛</td><td>模拟应用是近似，单种子</td></tr>
+      <tr><td><a href="reader.html?id=echoverse">Echoverse</a></td><td>合成应用，SQL 读出参考答案</td><td>多个应用世界</td><td>数据库比对加逐步 judge</td><td>终态判错时过程分归零</td><td>各修复的贡献拆不开</td></tr>
+      <tr><td><a href="reader.html?id=craftbench-ue">CraftBench-UE</a></td><td>原子玩法机制</td><td>70 题</td><td>构建、运行时断言、资产检查，无 LLM</td><td>全新工程重建，起始工程必须失败</td><td>每组合只跑 1 次，不测视觉</td></tr>
+      <tr><td><a href="reader.html?id=blenderworld">BlenderWorld</a></td><td>创作简报加参考素材</td><td>223 题，2,651 条判据</td><td>看图 judge、开工程的 judge、画质分</td><td>判据带出处，多模型交叉审</td><td>判据没有逐条人工验证</td></tr>
+      <tr><td><a href="reader.html?id=vericua">VeriCUA（探索式）</a></td><td>verifier 方法，不出题</td><td>—</td><td>agent 取证加确定性裁决</td><td>只读白名单，可弃权</td><td>成本高一个数量级，无 RL 实验</td></tr>
+      <tr><td><a href="reader.html?id=vericua-reward">VeriCUA（奖励版）</a></td><td>训练 verifier</td><td>—</td><td>可训练的 judge 加取证 agent</td><td>标签在取证前记录</td><td>只在 OSWorld 上训练</td></tr>
+    </tbody>
+  </table>
+
+  <h2 class="lab">两小时路线</h2>
+  <p class="route">
+    <a r="terminal-bench#n06">Terminal-Bench §2.1</a> → <a r="terminal-bench#n14">§2.3</a> → <a r="terminal-bench#n47">附录 B.4</a> →
+    <a r="craftbench-ue#n17">CraftBench-UE 三层检查</a> → <a r="osworld-2#n12">OSWorld 2.0 评分</a> → <a r="blenderworld#n16">BlenderWorld 双 judge</a> →
+    <a r="kimi-k3#n10">Kimi K3 后训练</a> → <a r="ui-tars-2#n08">UI-TARS-2 数据飞轮</a> → <a r="echoverse#n20">Echoverse 反馈回路</a> → <a r="vericua-reward#n43">VeriCUA 奖励表</a>
+  </p>
+
+  <h2 class="lab">全部论文</h2>
+  <div id="shelf"></div>
+</div>
+<script type="module">
+document.querySelectorAll("a[r]").forEach((a) => { const [id, n] = a.getAttribute("r").split("#"); a.href = `reader.html?id=${id}#${n}`; });
+const groups = await (await fetch("data/papers.json")).json();
+const root = document.getElementById("shelf");
+for (const g of groups) {
+  const h = document.createElement("h3"); h.className = "grp"; h.textContent = g.group; root.append(h);
+  const rows = document.createElement("div"); rows.className = "rows";
+  for (const p of g.papers) {
+    const t = p.ready ? `<a class="t" href="reader.html?id=${p.id}">${p.title}</a>` : `<span class="t">${p.title}</span>`;
+    rows.insertAdjacentHTML("beforeend", `${t}<span class="q2">${p.question}</span><span class="st ${p.ready ? "ok" : ""}">${p.ready ? "可读" : "待精读"}</span>`);
+  }
+  root.append(rows);
+}
+</script>
+</body>
+</html>

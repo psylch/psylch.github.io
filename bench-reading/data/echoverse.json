@@ -1,0 +1,697 @@
+{
+ "id": "echoverse",
+ "title": "Echoverse",
+ "full": "Echoverse: Deep, Evolving Environments for Training Computer-Use Agents at Scale",
+ "arxiv": "2607.28074",
+ "pdf": "papers/2607.28074.pdf",
+ "meta": "Microsoft Research · 2026-07 · 26 页",
+ "question": "环境和 verifier 上线后怎么迭代：用 rollout 反过来修环境、任务和 verifier？",
+ "tldr": [
+  "**world = 环境 + 任务 + verifier**：环境是带数据库的合成应用，状态就是数据库；任务的参考答案由 SQL 从库里读出，所以按构造为真；verifier 对着库判终态。",
+  "**「深」= 支持目标工作流端到端走通**：不是功能数量，而是任务库要求的每条工作流都能做完并留下可查的状态。造法是先把工作流编成可验证的 claims，修到 95% 通过才放行。",
+  "**反馈回路**：每个打过分的 rollout 同时当两种证据读，先判定失败属于环境、任务、verifier 还是模型。前三类先修（Triager 归并同因，Fixer 按层修），不能为提高通过率而降低任务要求，剩下的才作训练信号。",
+  "**verifier 的两层**：终态用数据库 sqldiff 和参考比较（LLM 只做窄比较，看不到轨迹）；RL 中再加一个逐步 judge 给过程分，但数据库判错时最后一步过程分归零，验证只看终态。",
+  "**结果**：9B 模型在 14 个切分上从 36.5 升到 67.1；浅环境训练后在真实站点上不升反降，深环境才升；修一个住宿环境让在其上训的模型从 16.2 升到 38.5；RL 在 held-out 上从 58.8 升到 68.0。",
+  "**局限**：共演化的效果无法拆成单个修复的贡献；深浅对照只有两个领域；监督数据继承老师上限；真实网页迁移幅度有限；RL 训练预算比评测更紧。"
+ ],
+ "forUs": [
+  "状态定义是前提：这篇把状态定义为数据库而不是画面，才有精确重置和可靠判分。UE、Maya、Blender 里对应的是工程文件和场景数据，能否读出、能否 diff，决定终态 verifier 能不能做。",
+  "反馈回路可以直接搬：采集到的 CUA 轨迹跑一遍模型，失败后先分「环境坏了、任务到不了、verifier 查错、模型不会」，前三类修世界，不当训练数据。这需要一个能读工程、查状态的白盒审查角色。",
+  "agent 能暴露人工 QA 看不到的缺陷，比如人点一下就设好的控件，agent 操作不了就静默用默认值。对 3D 软件的复杂面板，把 agent rollout 当成环境 QA 的常规步骤会很有用。",
+  "逐步 judge 与终态 verifier 的组合给出一个具体模板：过程分只在结果判对时才算数，防止刷过程分。3D 任务中间状态多，这个组合比单纯终态奖励更合适，但要自己设计过程判据。",
+  "它没解决的：该文只在可用数据库完整表达状态的 Web 应用上验证。渲染结果、视觉质量这类不可 diff 的产物，它没有答案。"
+ ],
+ "readFirst": [
+  {
+   "label": "§1 world 定义",
+   "why": "一个 world 由什么组成",
+   "note": "n01"
+  },
+  {
+   "label": "§3.3 深度的定义",
+   "why": "环境「深」指什么",
+   "note": "n11"
+  },
+  {
+   "label": "§4.6 一个 rollout 两种读法",
+   "why": "失败如何归因到环境、任务、verifier",
+   "note": "n20"
+  },
+  {
+   "label": "§4.7 修复纪律",
+   "why": "谁修、怎么修、不许做什么",
+   "note": "n22"
+  },
+  {
+   "label": "§7.3 奖励设计",
+   "why": "数据库终态 + 逐步 judge 怎么组合",
+   "note": "n44"
+  },
+  {
+   "label": "§6.2 深浅对照",
+   "why": "浅环境为什么比不训更糟",
+   "note": "n29"
+  },
+  {
+   "label": "§6.7 EchoStay 案例",
+   "why": "一次具体的修环境提升了多少",
+   "note": "n35"
+  }
+ ],
+ "notes": [
+  {
+   "id": "n01",
+   "page": 1,
+   "cat": "task",
+   "from": "By a world we mean three things bound together",
+   "to": "grades the outcome against ground truth",
+   "key": true,
+   "note": "**一个 world = 环境 + 任务 + verifier 三件绑在一起。** 环境是应用本身（状态和能改状态的动作），任务给目标，verifier 对着真值判结果。后面反馈回路修的就是这三样，不只是模型。"
+  },
+  {
+   "id": "n02",
+   "page": 2,
+   "cat": "task",
+   "from": "Depth: worlds built backwards from the workflows they are meant to teach",
+   "to": "closed and proprietary domains",
+   "note": "三个杠杆：深度（从要教的工作流倒推造环境）、能力定向（专门围绕模型总失败的那一个交互造窄环境）、共演化（每次评分后一起改环境、任务、verifier）。作者的主张是环境数量不是关键。"
+  },
+  {
+   "id": "n03",
+   "page": 2,
+   "cat": "data",
+   "from": "RL removes that ceiling but demands a volume of graded",
+   "to": "judging a screenshot",
+   "note": "RL（强化学习，让模型自己试、按结果打分来学）要的是大量可重置、可打分的回合，真实网站给不了：不会重置、会限流、没有真值可查，只能让另一个模型看截图判。这是作者用合成环境的根本理由。"
+  },
+  {
+   "id": "n04",
+   "page": 4,
+   "cat": "verifier",
+   "from": "our verdict of record is a database round-trip",
+   "to": "because it does not reproduce",
+   "note": "最终判决来自数据库往返：把操作后的库和参考比。所以从公开网页抄来的答案会被拒，因为它在库里复现不出来。这是它和靠截图判分的 live-web bench 的核心区别。"
+  },
+  {
+   "id": "n05",
+   "page": 4,
+   "cat": "verifier",
+   "from": "a verifier that rewards work the agent did not do",
+   "to": "will find and exploit",
+   "note": "宽松的 LLM judge 拿来筛训练数据，会把 judge 的盲点教给模型；放到 RL 里更糟，因为优化器会主动找到并利用奖励漏洞（reward hacking）。所以作者把 verifier 也列为要修的对象。"
+  },
+  {
+   "id": "n06",
+   "page": 4,
+   "cat": "task",
+   "from": "Taking the state to be the database rather than the pixels",
+   "to": "reward groundable and reset exact",
+   "key": true,
+   "note": "**环境的状态就是应用的数据库，不是画面。** 这一个决定同时带来两样东西：奖励能对着数据判，重置能做到精确（还原数据库快照）。全文后面的设计都从这里推出。",
+   "infer": "UE、Maya 的对应物是工程文件和场景数据。能不能把状态定义成可读可 diff 的工程数据，决定了能不能走这条路。"
+  },
+  {
+   "id": "n07",
+   "page": 5,
+   "cat": "task",
+   "from": "by executing SQL against the live database",
+   "to": "true by construction rather than by assertion",
+   "note": "任务的参考答案不是人写的，是造任务时直接对数据库跑 SQL 得出来的。所以任务「按构造就是真的」。任务分三种：READ（读信息，对参考答案）、WRITE（改状态，对参考状态变化）、READ_WRITE（两者都要，取最低分）。"
+  },
+  {
+   "id": "n08",
+   "page": 5,
+   "cat": "verifier",
+   "from": "it must be present in the sqldiff between",
+   "to": "was already there",
+   "note": "WRITE 任务的判法：任务开始前的数据库和结束后的数据库做 sqldiff，要求参考的那条变化出现在 diff 里。这样既证明写入落地了，又证明是任务要的那条写入，还防止「状态本来就满足」而白过。"
+  },
+  {
+   "id": "n09",
+   "page": 5,
+   "cat": "verifier",
+   "from": "It does not receive the trajectory, the screenshots",
+   "to": "matches the reference it is given",
+   "key": true,
+   "note": "**最终比较仍由 LLM 做，但它看不到轨迹和截图，只看两样东西：agent 的答案（或写入的 sqldiff）和参考。** 它只回答「结果是否等价于参考」，不评价 agent 做事是否合理。问题窄到每个 rollout 都能便宜地跑一次。"
+  },
+  {
+   "id": "n10",
+   "page": 5,
+   "cat": "verifier",
+   "from": "Reliability follows from that narrowness rather than from",
+   "to": "read out of the database",
+   "note": "作者说可靠性来自问题窄，不是来自 judge 强：比较两个金额是否一致，或一份行差异是否等于参考，是对着数据库读出的值做封闭比较，远比「凭截图判五十步是否成功」简单。消掉的两种主要误判是：agent 谎称成功，以及 judge 放过从网上抄来的答案。"
+  },
+  {
+   "id": "n11",
+   "page": 5,
+   "cat": "task",
+   "from": "A world is deep when its environment supports every workflow",
+   "to": "precise enough to check",
+   "key": true,
+   "note": "**「深」的操作定义：环境支持任务库要求的每条工作流，端到端走得通，且每条都在状态里留下足够精确、可检查的痕迹。** 深度是相对于目标工作流集合的完整度，不是功能数量。预订流程设不了人数的站点，页面再多也算浅。",
+   "infer": "造 UE/Maya 环境同理：先列要教的工作流，再检查每一条是否真能在环境里做完并留下可查的工程状态，而不是复刻软件全部功能。"
+  },
+  {
+   "id": "n12",
+   "page": 6,
+   "cat": "limit",
+   "from": "We trade a little surface realism for that control",
+   "note": "为了让日期固定、种子数据不变、同一任务第一次和第一千次含义相同，作者主动牺牲了一点表面真实感。这是合成环境相对真实软件的代价。"
+  },
+  {
+   "id": "n13",
+   "page": 6,
+   "cat": "task",
+   "from": "The process begins with hand-written seeds",
+   "to": "frontend, backend and database",
+   "note": "造环境第一阶段：人手写少量种子（场景、任务、能力、功能），展开成结构化规格和一组可验证的 claims（关于路由、状态、行为的断言），再生成完整的前端、后端、数据库。人只写种子，其余由 agent 完成。"
+  },
+  {
+   "id": "n14",
+   "page": 7,
+   "cat": "data",
+   "from": "Verification is separated from construction",
+   "to": "rather than one task at a time",
+   "note": "agent 分四种角色：Builder 造、Verifier 测、Triager 把全局失败按共同原因归并成少量工单并标注该改哪一层、Fixer 修并在回归时回滚。关键是造和测分开，没有 agent 给自己判卷；归并之后一个修复能清掉很多任务。"
+  },
+  {
+   "id": "n15",
+   "page": 7,
+   "cat": "task",
+   "from": "We advance a world when at least 95% of its claims pass",
+   "to": "does not advance at all",
+   "note": "环境的出厂门槛：至少 95% 的 claims 通过，剩下的写进 readiness 记录，区分硬阻塞和建议性风险，有未解决硬阻塞就不放行。技术栈是 FastAPI + SQLite 后端加 React 前端。"
+  },
+  {
+   "id": "n16",
+   "page": 8,
+   "cat": "verifier",
+   "from": "That last check is white-box, and deliberately so",
+   "to": "merely hard",
+   "key": true,
+   "note": "**任务可行性检查是白盒的：** 审任务的 agent 既用 Playwright 驱动界面，又读应用源码、直接查数据库，从而区分「任何界面都做不到」和「只是难」。可行性因此是应用的性质，不是某个模型碰巧做成与否的记录，也不会把题库塑造成迎合某个强模型。",
+   "infer": "UE 任务审查也需要白盒角色：能读工程和脚本，才能判断某个目标状态是否真能通过界面或 API 到达。"
+  },
+  {
+   "id": "n17",
+   "page": 8,
+   "cat": "task",
+   "from": "Every failure becomes an issue tagged by the layer that must change",
+   "to": "task text, or verifier",
+   "note": "每个失败都变成一张工单，标注要改哪一层：数据库、后端、前端、任务文本、verifier。5 个层级对应「谁来修」的分工，Triager 合并同因工单后交给对应层的 Fixer，修完重新对数据库真值打分。"
+  },
+  {
+   "id": "n18",
+   "page": 8,
+   "cat": "data",
+   "from": "In our experience most defects belong to the environment",
+   "to": "can carry harder tasks",
+   "note": "作者的经验是多数缺陷在环境，不在任务文本，所以每轮迭代都给环境升版本。更难的任务暴露环境缺口，更结实的环境又能承载更难的任务。"
+  },
+  {
+   "id": "n19",
+   "page": 8,
+   "cat": "data",
+   "from": "A zero can therefore have many causes",
+   "to": "checking the wrong condition",
+   "note": "**一个 0 分的成因可以有四种：** agent 不会、环境坏了、目标根本到不了、verifier 查错了条件。把所有失败都当模型能力缺口，会把合成世界的缺陷变成错误监督。"
+  },
+  {
+   "id": "n20",
+   "page": 8,
+   "cat": "data",
+   "from": "Attribution needs no separate apparatus",
+   "to": "the right one",
+   "key": true,
+   "note": "**归因不需要另建系统：** 失败的 rollout 送回工厂里原有的 verifier 和 triage agent，问它们对候选任务问的同样三件事：目标能否通过界面到达、任务点名的状态是否存在、判分的检查是否是对的。分出来的只有粗粒度的两类：世界的问题，或模型的问题。"
+  },
+  {
+   "id": "n21",
+   "page": 9,
+   "cat": "data",
+   "from": "where the reading is unclear we prefer to repair",
+   "to": "teaches the wrong lesson",
+   "note": "归因拿不准时优先修世界。理由是扣下一道任务的损失，小于留下一道教错东西的任务。"
+  },
+  {
+   "id": "n22",
+   "page": 9,
+   "cat": "data",
+   "from": "goals are never weakened merely to increase pass rates",
+   "to": "rather than a fix",
+   "key": true,
+   "note": "**修复纪律：不能为了提高通过率而放低目标。** Fixer 可以改环境、任务文本或 verifier，但让任务要求变少的修改按回归处理。任务有效、可解、判对了而模型仍失败，这个失败才是要保留的训练信号。"
+  },
+  {
+   "id": "n23",
+   "page": 9,
+   "cat": "data",
+   "from": "If an agent cannot reliably operate that same control",
+   "to": "guest count to fail",
+   "note": "**agent 特有的环境缺陷：** 人点一下就设好的人数控件，agent 操作不了时会静默保持默认值，所有依赖人数的预订任务都失败。人工 QA 容易漏掉，agent 跑一遍反而暴露。",
+   "infer": "3D 软件里类似的坑很多：面板需要悬停、拖拽精度、需要滚轮的控件。可以把 agent rollout 当成环境 QA 的常规一环。"
+  },
+  {
+   "id": "n24",
+   "page": 9,
+   "cat": "data",
+   "from": "A frontier model (GPT-5.4) solves each task in the live environment",
+   "to": "behind every experiment in",
+   "note": "训练数据来源：强模型 GPT-5.4 在环境里解每道题，grounded verifier 只留通过的轨迹，作为监督微调语料。筛选的是轨迹，不是任务；老师做不出的任务仍保留，只是没有示范。"
+  },
+  {
+   "id": "n25",
+   "page": 9,
+   "cat": "limit",
+   "from": "This is verifier-filtered, rejection-sampled distillation",
+   "note": "这是拒绝采样式蒸馏（老师多试、只留做对的、让学生模仿），作者承认它继承老师的能力上限。第 7 节用 RL 去突破这个上限。"
+  },
+  {
+   "id": "n26",
+   "page": 11,
+   "cat": "task",
+   "from": "The skill is learned only when the control itself appears in enough forms",
+   "to": "single deep application cannot supply",
+   "note": "**能力世界：** 有些弱点不是缺一个领域，而是某个控件不会用（比如日期选择器）。解法是把这个控件隔离出来，在上百种布局和主题里批量生成，再对每个生成任务。单个深应用提供不了这种形态的多样性。",
+   "infer": "对 3D 软件：某类控件（节点图连线、时间轴拖拽、数值滑块）模型总失败时，可以单独造窄环境反复练，而不是造新软件。"
+  },
+  {
+   "id": "n27",
+   "page": 11,
+   "cat": "verifier",
+   "from": "grading every submission by whether the filtered results actually meet",
+   "to": "rather than by appearance",
+   "note": "嵌套筛选世界的判分是看筛选结果是否真的满足条件，由应用自己的逻辑判，不看画面。训练里 20 类控件 200 个前端，留出 9 类组合面板 100 个前端做 held-out。"
+  },
+  {
+   "id": "n28",
+   "page": 12,
+   "cat": "task",
+   "from": "To isolate this we take two live WebVoyager domains",
+   "to": "deep-world trajectories",
+   "note": "深浅对照实验设计：在两个真实网站（Allrecipes、Hugging Face）上，比较基础模型、只用浅世界轨迹训的模型、只用深世界轨迹训的模型。语料规模相近，评测用真实站点的公开任务，完全在训练世界之外。浅世界是短而独立的任务，深世界是步步依赖的任务。"
+  },
+  {
+   "id": "n29",
+   "page": 12,
+   "cat": "result",
+   "from": "Since both runs cover the same domains at comparable scale",
+   "to": "preserved the structure of the work",
+   "key": true,
+   "note": "**结果：浅世界训练后在 Allrecipes 上低于基础模型（80.0 到 75.0），Hugging Face 持平在 48.0；深世界训练后两者分别升到 85.0 和 65.0。** 作者的解释是区别在于训练内容是否保留了工作的依赖结构。深模型循环更少，Hugging Face 上耗尽步数的任务从 15 降到 9。"
+  },
+  {
+   "id": "n30",
+   "page": 12,
+   "cat": "limit",
+   "from": "With two domains and a few dozen tasks each",
+   "to": "how much depth is worth",
+   "note": "作者自己说明：只有两个领域、每个几十个任务，只能作为「浅世界可能比不训更糟」的证据，不能当作深度值多少的估计。"
+  },
+  {
+   "id": "n31",
+   "page": 13,
+   "cat": "result",
+   "from": "That leaves a 9B model within fourteen points of GPT-5.4",
+   "to": "checkable rather than on scale",
+   "note": "主结果：12 个世界、21,009 条通过的轨迹训出 9B 模型，14 个评测切分的平均分从 36.5 升到 67.1，距老师 GPT-5.4 的 80.7 还差十几个点。在邮件、银行和两个嵌套筛选切分上持平或超过老师。评分都来自数据库 verifier。"
+  },
+  {
+   "id": "n32",
+   "page": 14,
+   "cat": "result",
+   "from": "gains hold on forms never trained on",
+   "to": "rather than a layout",
+   "note": "**held-out 设计：** 每个能力世界都留出训练中从没出现的控件族。结果是留出的日期选择器从 34.0 升到 57.3，留出的筛选面板从 62.8 升到 84.8，作者据此说模型学到的是规则不是版式。两个技能互相迁移，不互相挤占。"
+  },
+  {
+   "id": "n33",
+   "page": 14,
+   "cat": "limit",
+   "from": "These barely overlap with what we built",
+   "to": "write-heavy workflows",
+   "note": "真实网站评测（WebVoyager、Online-Mind2Web）和训练世界几乎不重叠：前者是公开站点和读多写少，后者是登录后和写多读少。所以作者只期待方向性提升，表 6 里的增幅确实不大（例如 Online-Mind2Web 数据中心条件 29.5 到 37.2）。"
+  },
+  {
+   "id": "n34",
+   "page": 15,
+   "cat": "result",
+   "from": "while transfer to the live web flattens outright",
+   "note": "**两个扩展轴表现不同：** 同一批世界里加轨迹，域内平均分继续涨但收益递减，真实网页迁移在 6,400 到 20,000 条之间趋平甚至略降；加不同环境的数量则两者继续涨。结论是泛化的杠杆是多样性，不是体量。",
+   "infer": "对我们：与其对同一个 UE 场景采更多轨迹，不如多换工程和任务类型。"
+  },
+  {
+   "id": "n35",
+   "page": 15,
+   "cat": "data",
+   "from": "a guest-count control silently broke booking tasks",
+   "to": "could never register",
+   "key": true,
+   "note": "**共演化的实例：** 住宿站里人数控件坏掉，正确的预订永远无法被记成成功。修复后能完成的预订占比从 48% 升到 78%，24 个被挡住的任务恢复了 15 个。这类修复是环境缺陷，不是模型缺陷。"
+  },
+  {
+   "id": "n36",
+   "page": 15,
+   "cat": "verifier",
+   "from": "realigning it lifted the share of gradable tasks",
+   "to": "from 34% to 99%",
+   "note": "verifier 也会坏：聊天世界的 verifier 与数据脱节，重新对齐后可判分任务占比从 34% 升到 99%。这是 verifier 漂移的典型案例，说明 verifier 需要和环境、数据一起维护。"
+  },
+  {
+   "id": "n37",
+   "page": 15,
+   "cat": "data",
+   "from": "needed frontend fixes and a page-load speed-up",
+   "note": "其他世界的修复各不同：论坛世界修前端和页面加载速度后，一组 37 个任务从 0 个可解变成 36 个；Care 世界只需要一处状态接线；Forge 世界后端逻辑有了但没有界面控件能触发它。各层的缺陷都出现过。"
+  },
+  {
+   "id": "n38",
+   "page": 16,
+   "cat": "result",
+   "from": "the model trained on its corpus more than doubles",
+   "to": "two-thirds of the distance to",
+   "note": "**共演化的效果：** 对住宿世界跑两轮循环（环境 v1 到 v2、任务集重生成），在它语料上训出的模型从 16.2% 升到 38.5%，补上了到 GPT-5.4 的 50.4% 之间三分之二的差距。"
+  },
+  {
+   "id": "n39",
+   "page": 16,
+   "cat": "limit",
+   "from": "An environment-only or verifier-only ablation is not well defined",
+   "to": "any one repair",
+   "note": "作者承认这个实验没法拆：环境决定能出什么任务，任务和参考又是从修好的库里生成的，所以做不出「只修环境」或「只修 verifier」的消融。比较的是循环的一整轮，不是某次具体修复的效果。"
+  },
+  {
+   "id": "n40",
+   "page": 16,
+   "cat": "data",
+   "from": "A trajectory that only ever goes right contains no instance",
+   "to": "noticed and undone",
+   "note": "**模仿的上限：** 只留成功轨迹的语料里，没有「发现走错并撤回」，也没有「判断自己做完了」。而老师的失败方式和 9B 学生不一样，示范只能教老师犯过的错的补救。RL 用学生自己的 rollout，所以学到的是自己的补救。"
+  },
+  {
+   "id": "n41",
+   "page": 17,
+   "cat": "data",
+   "from": "Echoverse meets all five by construction and needed no new machinery",
+   "to": "filtered the supervised data",
+   "note": "RL 对环境的五项要求：精确重置、足够的回合吞吐、可信的奖励、一次训练中任务含义不漂移、破坏性操作安全。Echoverse 直接满足，且没加新机制：重置就是每任务一份数据库快照，奖励就是筛过监督数据的同一个 verifier。"
+  },
+  {
+   "id": "n42",
+   "page": 18,
+   "cat": "verifier",
+   "from": "but it is largely silent in the middle of an episode",
+   "to": "a single bit of signal",
+   "key": true,
+   "note": "**为什么只靠数据库奖励不够：** 数据库只能告诉你一个回合最后成没成，中间状态大多无所谓对错，所以五十步的轨迹只得到一比特信号。需要一个逐步的信号补上中间过程，代价是重新引入了一个被判出来的信号。"
+  },
+  {
+   "id": "n43",
+   "page": 18,
+   "cat": "verifier",
+   "from": "A turn scores 1 when the action demonstrably took effect",
+   "to": "before the task was done",
+   "note": "**逐步 dense judge：** 多模态模型（GPT-4.1 视觉）看动作前的截图和标出的点击目标，每一步给 0 或 1。动作确实生效（状态或地址变了、下一步接着用）给 1；重复、空操作、报错、循环、乱滚动、任务没做完就 terminate 给 0。要求它对比前后截图，不信 agent 自己的说法。"
+  },
+  {
+   "id": "n44",
+   "page": 18,
+   "cat": "verifier",
+   "from": "Three couplings keep the grounded term in charge",
+   "to": "pure outcome",
+   "key": true,
+   "note": "**两种信号怎么组合：总奖励 = 轨迹奖励 + 1.0 × 逐步奖励。** 三个约束让数据库那一项说了算：轨迹判错时最后一步的逐步奖励强制归零（防止靠猜什么时候停来刷过程分）；错误终止有显式惩罚；逐步奖励只用于训练，验证只看纯结果。"
+  },
+  {
+   "id": "n45",
+   "page": 18,
+   "cat": "data",
+   "from": "Each turn becomes its own row, tagged with its step index",
+   "note": "**RL 的信用分配：** 一个 T 步轨迹拆成 T 行，每行带步序号和所属提示 id。轨迹奖励广播到每一行，逐步奖励加在对应行上。优势按同一提示下全部 rollout 的全部行来算均值，所以成功轨迹整体被抬高，失败轨迹里的好步骤也比坏步骤得分高。另外不除以组内标准差，避免放大几乎全对或全错的任务。"
+  },
+  {
+   "id": "n46",
+   "page": 18,
+   "cat": "data",
+   "from": "We sample the starting policy four times on every candidate task",
+   "to": "solves one, two or three times",
+   "note": "**RL 任务池过滤：** 起始策略对每道题采样 4 次，只留做对 1 到 3 次的。全对或全错的题一组 rollout 结果相同，优势为零，不产生梯度。最后 5 个世界共 353 道独立任务（189 难、124 中、40 易，288 道要写入），32 张 GPU，每步 16 个提示、每组 8 条。"
+  },
+  {
+   "id": "n47",
+   "page": 19,
+   "cat": "limit",
+   "from": "Note that this is half the 100-action budget",
+   "to": "than it is scored under",
+   "note": "作者承认训练时回合上限是 50 步，评测是 100 步，训练的预算比评分时更紧。",
+   "infer": "评测验证集每个世界只有 25 题，共 125 题，且只有一次训练。提升 9 个点的置信度有限。"
+  },
+  {
+   "id": "n48",
+   "page": 20,
+   "cat": "result",
+   "from": "The judged score rises from 58.8% to 68.0%",
+   "to": "step 50",
+   "note": "**RL 结果：在五个世界、只看数据库 verifier 的 held-out 集上，得分从 58.8% 升到 68.0%（约两个 epoch，第 50 步）。** 训练奖励同期上升，但训练奖励含逐步项，所以不能直接比。没有做去掉逐步奖励的对照。"
+  },
+  {
+   "id": "n49",
+   "page": 24,
+   "cat": "verifier",
+   "from": "Small rounding differences in prices, fees, or totals are acceptable",
+   "note": "READ 判官的 prompt 明确允许四舍五入（288 美元对 287.62 通过）、单位换算和格式差异。这是故意的宽松：agent 读的是界面显示值，和数据库精度不同。",
+   "infer": "宽松容差写在 prompt 里，而不是写在代码里，就意味着它依赖 judge 的执行一致性，换 judge 模型要重新校准。"
+  },
+  {
+   "id": "n50",
+   "page": 25,
+   "cat": "verifier",
+   "from": "Extra changes are OK as",
+   "to": "long as the required change was made",
+   "note": "WRITE 判官的规则：多做了额外修改不扣分，只要要求的变化在 diff 里。这意味着 verifier 不惩罚副作用。",
+   "infer": "一个 agent 在做对目标之外还误删别的东西，也会拿满分。对 UE/Maya 这类破坏性强的软件，可能需要加一条「没有未请求的破坏性改动」的检查。"
+  }
+ ],
+ "sections": [
+  {
+   "id": "s01",
+   "page": 1,
+   "title": "摘要",
+   "from": "Computer-use agents learn from what their actions change",
+   "summary": "摘要给出全部结论：9B 模型从 36.5% 升到 67.1%，浅环境不升反降，修一个环境让模型从 16.2% 升到 38.5%，RL 从 58.8% 升到 68.0%。读完摘要就掌握全文主线。"
+  },
+  {
+   "id": "s02",
+   "page": 1,
+   "title": "§1 Introduction",
+   "from": "A computer-use agent learns the results of its actions only where",
+   "summary": "定义了 world（环境、任务、verifier 三件）和三个杠杆（深度、能力定向、共演化），并说明为什么 RL 把环境质量从数据问题变成前提。**必读**，后面都在展开这一节。"
+  },
+  {
+   "id": "s03",
+   "page": 3,
+   "title": "§2 Related work",
+   "from": "Live-web benchmarks. WebVoyager",
+   "summary": "对比 live-web bench（靠截图让模型判分、不会重置）和合成环境套件，说明本文做的是固定数量、提高单个环境内部质量。可以略读，Verification 和 Curriculum 两段有用。"
+  },
+  {
+   "id": "s04",
+   "page": 4,
+   "title": "§3.1 Environments, tasks and worlds",
+   "from": "An environment is a tuple E = (S, A, T, O, D0 )",
+   "summary": "形式化定义：环境状态是数据库而不是画面，任务参考由 SQL 从库里读出。**必读**，是整套设计的出发点。"
+  },
+  {
+   "id": "s05",
+   "page": 5,
+   "title": "§3.2 Grounded grading",
+   "from": "Let DT denote the database after the agent terminates",
+   "summary": "三种任务（READ、WRITE、READ_WRITE）的判法，以及最终比较由只看结果和参考的 LLM 完成。**必读**，是 verifier 设计的核心。"
+  },
+  {
+   "id": "s06",
+   "page": 5,
+   "title": "§3.3 Depth, defined operationally",
+   "from": "An environment can be stable, plausibly styled and still be useless",
+   "summary": "把「深」定义为环境支持任务库要求的每条工作流，并给出五条属性（表 1）。**必读**，回答了环境深度指什么。"
+  },
+  {
+   "id": "s07",
+   "page": 6,
+   "title": "§4 Echoverse: the factory and the co-evolution loop",
+   "from": "Echoverse is a single pipeline that produces two distinct types",
+   "summary": "总览两阶段流水线：第一阶段造并验证环境，第二阶段在其上长出有据任务库，两阶段是同一个循环。"
+  },
+  {
+   "id": "s08",
+   "page": 7,
+   "title": "§4.1 An agent workforce",
+   "from": "Every stage in Figure 2 is carried out by an agent",
+   "summary": "介绍 Builder、Verifier、Triager、Fixer 四类 agent 及其工具。造和测分开、归并在修之前，值得看。"
+  },
+  {
+   "id": "s09",
+   "page": 7,
+   "title": "§4.2 Phase 1: building the environment",
+   "from": "The pipeline expands a handful of seed scenarios into a specification",
+   "summary": "种子展开为 claims、生成应用、修到 95% claims 通过才放行。短，可快速读。"
+  },
+  {
+   "id": "s10",
+   "page": 8,
+   "title": "§4.3 Phase 2: growing the corpus",
+   "from": "An environment that builds cleanly is still not training data",
+   "summary": "任务从真实数据里生成，经一组 verifier 审查，其中白盒可行性检查最关键；失败按层打标签，修到 95% 通过。**必读**。"
+  },
+  {
+   "id": "s11",
+   "page": 8,
+   "title": "§4.4 Seeding",
+   "from": "Where a rich public dataset exists we build on it",
+   "summary": "种子数据优先用公开数据集，没有就生成并要求稠密一致。可跳过。"
+  },
+  {
+   "id": "s12",
+   "page": 8,
+   "title": "§4.5 Determinism, isolation and reset",
+   "from": "Every rollout runs against an isolated per-task copy of the database",
+   "summary": "每个 rollout 用独立数据库副本，这就是后来 RL 的重置机制。很短。"
+  },
+  {
+   "id": "s13",
+   "page": 8,
+   "title": "§4.6 One rollout, two signals",
+   "from": "The score an agent earns is never a measure of the model alone",
+   "summary": "一次打分是 agent、环境、任务、verifier 四者的联合结果，失败要先归因再决定修世界还是训模型。**必读**，回答了反馈回路怎么运转。"
+  },
+  {
+   "id": "s14",
+   "page": 9,
+   "title": "§4.7 Repair before training",
+   "from": "Repairing the world before training is what makes the resulting model",
+   "summary": "修复先于训练，不能为提高通过率降低目标，一个修复可清掉一批任务。**必读**，有 agent 暴露人工 QA 看不到的缺陷的例子。"
+  },
+  {
+   "id": "s15",
+   "page": 9,
+   "title": "§4.8 From tasks to trajectories",
+   "from": "Only once a world has been through that loop do its tasks become",
+   "summary": "用 GPT-5.4 做老师，verifier 只留通过的轨迹做监督微调，承认继承老师上限。"
+  },
+  {
+   "id": "s16",
+   "page": 9,
+   "title": "§5.1 Ten deep domains",
+   "from": "The domains with the most consequential work are the hardest",
+   "summary": "十个完整领域世界及其深度要求（表 2、3 有各世界的表数和行数）。可略读，看规模即可。"
+  },
+  {
+   "id": "s17",
+   "page": 11,
+   "title": "§5.2 Two capability worlds",
+   "from": "Not every weakness is a missing domain",
+   "summary": "把单个控件（日期选择器、嵌套筛选）在上百种布局里批量生成并留出未见控件族。值得读，是「窄而多形态」造法的例子。"
+  },
+  {
+   "id": "s18",
+   "page": 12,
+   "title": "§5.3 Twelve training worlds, fourteen evaluation splits",
+   "from": "To avoid ambiguity in the tables that follow",
+   "summary": "澄清训练 12 个世界、评测 14 个切分，平均为切分的无加权均值。很短。"
+  },
+  {
+   "id": "s19",
+   "page": 12,
+   "title": "§6.1–6.2 Setup; Deep worlds transfer",
+   "from": "Three models run through this section",
+   "summary": "实验设置，以及深浅环境对照：浅环境训练后真实站点分数低于基础模型，深环境才提升。**必读**，是深度主张的证据。"
+  },
+  {
+   "id": "s20",
+   "page": 13,
+   "title": "§6.3 The full scorecard",
+   "from": "This is the main supervised result: what the twelve worlds",
+   "summary": "主结果：36.5 升到 67.1，距 GPT-5.4 的 80.7 还差十几个点。看表 4 即可。"
+  },
+  {
+   "id": "s21",
+   "page": 14,
+   "title": "§6.4–6.5 One skill; Transfer to the live web",
+   "from": "The datepicker and nested-filter worlds drill the controls",
+   "summary": "held-out 控件族上的泛化，以及到真实网页的迁移（幅度有限）。**必读** held-out 设计这部分。"
+  },
+  {
+   "id": "s22",
+   "page": 15,
+   "title": "§6.6 What scaling buys",
+   "from": "We scaled two axes separately",
+   "summary": "加轨迹对真实网页迁移会饱和，加不同环境才继续涨。值得读。"
+  },
+  {
+   "id": "s23",
+   "page": 15,
+   "title": "§6.7 The model is not the only thing that learns",
+   "from": "EchoStay made the co-evolution loop visible",
+   "summary": "几个修环境和修 verifier 的具体案例，以及两轮后模型从 16.2% 升到 38.5%。**必读**，是反馈回路最具体的证据，也有作者对不可拆消融的说明。"
+  },
+  {
+   "id": "s24",
+   "page": 16,
+   "title": "§7.1 Imitation carries a ceiling",
+   "from": "Every result so far comes from imitation",
+   "summary": "解释为什么只模仿成功轨迹学不到纠错，需要 RL。读者不熟 RL 时可先读这一节。"
+  },
+  {
+   "id": "s25",
+   "page": 17,
+   "title": "§7.2 Why the live web is not an RL environment",
+   "from": "Reinforcement learning needs an environment it can drive at scale",
+   "summary": "RL 对环境的五项要求，合成环境全部满足而真实网页都不满足（表 7）。"
+  },
+  {
+   "id": "s26",
+   "page": 18,
+   "title": "§7.3 Method",
+   "from": "We take πSFT as the starting policy",
+   "summary": "奖励设计：轨迹奖励加逐步 judge，三个约束保证数据库判决说了算，以及按行的信用分配。**必读**，回答了两种信号怎么组合。"
+  },
+  {
+   "id": "s27",
+   "page": 18,
+   "title": "§7.4 Setup",
+   "from": "We train on five worlds",
+   "summary": "五个世界、32 张 GPU，任务池按起始策略 4 次采样过滤，只留做对 1 到 3 次的。含超参表（表 9）。"
+  },
+  {
+   "id": "s28",
+   "page": 20,
+   "title": "§7.5 Results",
+   "from": "We report two quantities",
+   "summary": "held-out 判分从 58.8% 升到 68.0%。结果简短，没有逐步奖励的消融。"
+  },
+  {
+   "id": "s29",
+   "page": 20,
+   "title": "§8 Conclusion",
+   "from": "A world is more than a benchmark to score against",
+   "summary": "总结，并说明只发布评测任务以保持不被污染。可略读。"
+  },
+  {
+   "id": "s30",
+   "page": 23,
+   "title": "附录 B The supervised corpus",
+   "from": "Table 10 gives the composition of the supervised fine-tuning corpus",
+   "summary": "监督语料构成：31 个任务集、21,009 条轨迹，失败轨迹直接丢弃。可跳过。"
+  },
+  {
+   "id": "s31",
+   "page": 23,
+   "title": "附录 C Verifier prompts",
+   "from": "The comparison described in Sec. 3.2 is a single LLM call per task",
+   "summary": "READ 与 WRITE 两个判官的 prompt 原文，可直接参考。**必读**，含四舍五入容差和允许额外改动的规则。"
+  }
+ ],
+ "ver": "v1"
+}

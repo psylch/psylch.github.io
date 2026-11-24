@@ -1,0 +1,633 @@
+{
+ "id": "vericua-reward",
+ "title": "VeriCUA（奖励版）",
+ "full": "VeriCUA: Learning Proactive Verification for Reliable GUI Agent Rewards",
+ "arxiv": "2610.26469",
+ "pdf": "papers/2610.26469.pdf",
+ "meta": "Southwest Jiaotong Univ. / Tsinghua / UESTC 等 · 2026-10 · 正文 10 页 + 附录（共 26 页）",
+ "question": "verifier 当 RL 奖励来源时要多可靠，怎么训练一个会主动取证的 verifier？",
+ "tldr": [
+  "**问题**：RL 里每条 rollout（agent 完整做一遍任务）结束后都要有人打分。只看截图的被动 verifier 看不到存盘文件内容、隐藏设置这类关键证据，打分不准，agent 就学歪。",
+  "**主动验证**：verifier 拆成两个角色。可训练的 JUDGE 负责写检查项、判断证据够不够、决定停不停；冻结的 PROBE（一个现成的 GUI agent）在 agent 做完后的真实环境里点开菜单、翻页去取证，只看不改。",
+  "**关键发现**：从 4B 到 GPT-5.4 的 prompted JUDGE 都卡在 68% 到 70% 的一致率，加 few-shot 最多涨 0.6 个点。作者的解释是，一个检查值不值得做，要执行了才知道，光读任务描述猜不出来。",
+  "**训练配方**：先用约 1,270 条 Kimi-K2.6 的验证轨迹做 SFT 冷启动（只留结论和环境判分一致的），再在线 RL。标签来自 OSWorld 自带的可执行判分，在 PROBE 动环境之前记录。每个终态只验证一次，奖励同时看判对没有和有没有动用 PROBE。",
+  "**结果**：4B 的 VeriCUA 一致率比 few-shot GPT-5.4 高 5.36 个点，PROBE token 少 47.6% 到 59.8%；1B 版本也超过所有 prompted JUDGE。拿它当奖励训练 Actor，Pass@4 总体涨 3.21 个点，held-out 的多应用任务涨 5.40 个点。",
+  "**短板**：论文没有单独的局限章节。能读到的限制是：终态只能验证一次、未存盘的状态无法确认、评测只保留重放结果稳定的轨迹、成本只算 PROBE token、训练只用了 OSWorld。"
+ ],
+ "forUs": [
+  "我们的采集轨迹是 verifier 训练的天然原料，但缺一样东西：每条轨迹的可执行结果标签。论文的标签来自 OSWorld 自带的判分程序。剪映、UE、Maya 没有现成判分，要先给每类任务写终态检查（工程文件、导出物属性），否则这套训练无从下手。",
+  "「主动验证」落到我们的软件上，就是在 agent 做完后去看它没截屏的东西：UE 的 Outliner 和 Details、Maya 的场景大纲、剪映的时间线和导出设置。论文的 Figure 6 说明 check 里写明「条件加位置」，PROBE 两步就能找到，只写条件要九步还找不到。我们可以把各软件的常见取证位置写进 check 模板。",
+  "我们接口上 GUI、MCP、代码都接受，所以 PROBE 不必只用 GUI 翻找。让它直接读工程文件或调 MCP 查场景状态，应该比点菜单更快更稳。这是我的推断，论文没试过。",
+  "评测我们自己的 verifier 时要把假阴性（成功被判失败）单独报告。论文显示，训练过的 verifier 假阴性 4.6%，prompted 版 10.0%，意味着前者让更多成功 rollout 拿到奖励。论文主表只报一致率，没拆假阳性。",
+  "论文的任务多是设置、文件内容、网页数据这类可数字化判定的结果。渲染质量、镜头好不好看这类主观或非确定性产物，它没碰，需要另找方案。"
+ ],
+ "readFirst": [
+  {
+   "label": "摘要",
+   "why": "问题、方法、主要数字一屏讲完，先看 prompted JUDGE 为什么卡在 68% 到 70%",
+   "note": "n02"
+  },
+  {
+   "label": "§1 Figure 1 与关键观察",
+   "why": "「一个反例就能判失败」的例子，说明 what to check 和 when to stop",
+   "note": "n09"
+  },
+  {
+   "label": "§2.3 单次尝试的奖励设计",
+   "why": "全文最核心的设计：奖励里加入有没有用 PROBE",
+   "note": "n14"
+  },
+  {
+   "label": "附录 G Table 9 奖励表",
+   "why": "具体五档奖励数值和设计理由",
+   "note": "n43"
+  },
+  {
+   "label": "§3.3 Figure 5 与 Figure 6",
+   "why": "SFT 与 RL 各自贡献，PROBE 轮数，以及为什么 check 要写位置",
+   "note": "n29"
+  },
+  {
+   "label": "§3.4 与附录 H 下游训练",
+   "why": "拿它当奖励训练 Actor 的效果，以及假阴性的作用",
+   "note": "n45"
+  },
+  {
+   "label": "附录 D 评测协议",
+   "why": "怎么保证评测标签干净：同一轨迹重放六次结果一致才保留",
+   "note": "n39"
+  }
+ ],
+ "notes": [
+  {
+   "id": "n01",
+   "page": 1,
+   "cat": "task",
+   "from": "Reinforcement learning for computer-use agents increasingly relies on proactive reward agents",
+   "to": "what recorded screenshots cannot reveal",
+   "note": "背景：RL 后训练就是让 agent 反复做任务，做完由「奖励」告诉它这次做对没有，对的行为被加强。GUI 任务做完谁来打这个分，是现在的瓶颈。这篇的思路是让打分者自己也去操作环境取证。"
+  },
+  {
+   "id": "n02",
+   "page": 1,
+   "cat": "result",
+   "key": true,
+   "from": "neither scaling up the model nor providing few-shot examples reliably improves verification",
+   "to": "plateau at",
+   "note": "**从 4B 到 GPT-5.4 的 prompted JUDGE 都卡在 68% 到 70% 的宏平均一致率**。模型再大、示例再多都没用，所以作者把问题定位在「验证策略」而不是模型能力。",
+   "infer": "对数据团队的含义：自建 verifier 时不要默认换个更强的 judge 模型就能解决。"
+  },
+  {
+   "id": "n03",
+   "page": 1,
+   "cat": "verifier",
+   "from": "A trainable JUDGE decides what to check",
+   "to": "executes the checks in the live environment",
+   "note": "**两角色分工**：JUDGE 可训练，只管写检查项和决定停不停；PROBE 冻结，只管去真实环境里执行检查。冻结的好处是效果差异只能归因于 JUDGE，并且 PROBE 可以随时换掉。"
+  },
+  {
+   "id": "n04",
+   "page": 1,
+   "cat": "data",
+   "from": "Trained only on OSWorld and evaluated without further training",
+   "to": "WebArena-Verified",
+   "note": "只在 OSWorld（桌面）上训练，直接拿去测手机（MobileWorld）和网页（WebArena-Verified）。作者想证明学到的是通用取证策略，不是某个环境的套路。"
+  },
+  {
+   "id": "n05",
+   "page": 1,
+   "cat": "verifier",
+   "from": "Rule-based rewards are precise but brittle and",
+   "to": "available observations",
+   "note": "现有两条路各有硬伤：规则奖励（写程序检查终态）准但脆，每个任务要单写，难规模化；被动模型奖励（让模型看截图打分）灵活，但只能验证截图里有的东西。"
+  },
+  {
+   "id": "n06",
+   "page": 1,
+   "cat": "verifier",
+   "from": "Decisive evidence, such as the contents of a saved file",
+   "to": "may therefore remain unobserved",
+   "note": "被动验证的根本缺陷：存盘文件的内容、隐藏的应用状态这类决定性证据，截图里根本没有。screenshot-only 的 verifier 对这类任务只能猜。"
+  },
+  {
+   "id": "n07",
+   "page": 1,
+   "cat": "verifier",
+   "from": "Because such verification is performed for every training rollout",
+   "to": "expensive model for each reward",
+   "note": "成本约束：RL 里每条 rollout 都要打分，量非常大，所以 verifier 不能每次都调一个大模型反复操作。这是后面为什么要同时优化准确率和 PROBE 使用量。"
+  },
+  {
+   "id": "n08",
+   "page": 2,
+   "cat": "verifier",
+   "from": "Reliability depends on the verification strategy, which consists of two coupled decisions",
+   "to": "when to stop",
+   "note": "**验证策略 = 查什么 + 什么时候停**，两个互相牵连的决定，任务描述本身不规定。全文的方法就是把这两个决定变成可训练的。"
+  },
+  {
+   "id": "n09",
+   "page": 2,
+   "cat": "verifier",
+   "from": "For a task that requires notes on every slide",
+   "to": "already establishes failure",
+   "note": "Figure 1 的例子：任务要求每张幻灯片都有备注。只要找到一张没备注的就能判失败，prompted GPT-5.4 却要求逐张对比，一直滚动也得不出结论。判失败只需一个反例，判成功才要全部满足，这个不对称是策略要学会的。"
+  },
+  {
+   "id": "n10",
+   "page": 2,
+   "cat": "verifier",
+   "key": true,
+   "from": "Our key observation is that a check",
+   "to": "not by reading the task",
+   "note": "**核心观察：检查的价值要执行了才知道。** 证据在哪里、agent 留下了什么状态、PROBE 能到哪里，读任务描述猜不出来，所以策略只能通过「执行验证，再和真实结果对比」来学。"
+  },
+  {
+   "id": "n11",
+   "page": 2,
+   "cat": "data",
+   "key": true,
+   "from": "Learning from execution, however, faces a single-attempt constraint",
+   "to": "within-state rollout comparisons",
+   "note": "**单次尝试约束**：Actor 的起点可以重置，所以 GRPO 这类方法能从同一起点采多条 rollout 互相比较好坏。verifier 的起点是 Actor 做完的终态，是一次随机执行的产物，没法复现，每个终态只能验证一次，没有同状态的对照组。"
+  },
+  {
+   "id": "n12",
+   "page": 2,
+   "cat": "limit",
+   "from": "may not reproduce it, identical screenshots can hide different application state",
+   "to": "probing itself changes it",
+   "note": "作者承认的三个困难：重新执行不一定得到同一个终态；截图一样的两个状态，内部应用状态可能不同；探查本身还会改变状态。所以不能为同一终态多采几次验证来比较。"
+  },
+  {
+   "id": "n13",
+   "page": 2,
+   "cat": "verifier",
+   "from": "Freezing the PROBE ties outcome differences",
+   "to": "swapped without retraining",
+   "note": "冻结 PROBE 有两个收益：效果差异可以归因到 JUDGE，PROBE 可以换成别的模型而不用重训 JUDGE。后面附录 C 验证了这一点。"
+  },
+  {
+   "id": "n14",
+   "page": 2,
+   "cat": "verifier",
+   "key": true,
+   "from": "Returns are normalized across",
+   "to": "no environment forking is required",
+   "note": "**解决单次尝试的办法**：不在同一状态内比较，而是把一批不同终态的回报做标准化。奖励里同时包含「是否动用了 PROBE」，所以单次尝试也能反映停得对不对，不需要分叉环境。"
+  },
+  {
+   "id": "n15",
+   "page": 4,
+   "cat": "verifier",
+   "from": "The JUDGE returns success when all checks are satisfied, failure when any is violated",
+   "to": "uncertain otherwise",
+   "note": "判定规则是硬编码的：全部满足才成功，任一违反即失败，其余为 uncertain。uncertain 才会触发 PROBE 去查未决项。"
+  },
+  {
+   "id": "n16",
+   "page": 4,
+   "cat": "verifier",
+   "from": "Its instructions confine it to inspecting the environment",
+   "to": "repairing the Actor's task",
+   "note": "PROBE 被限定为只检查、不补做：不能替 Actor 把没做完的任务做完。否则 verifier 自己就成了 actor，会把失败的任务修成成功。具体 prompt 见附录 I。"
+  },
+  {
+   "id": "n17",
+   "page": 4,
+   "cat": "verifier",
+   "key": true,
+   "from": "A correctness-only reward scores a correct verdict reached directly",
+   "to": "so the reward itself must carry that signal",
+   "note": "**只奖励判对会造成什么问题**：直接判对和探查后判对得分一样，模型学不到「什么时候该探查」。又因为每个终态只有一次尝试，没有对照来显示探查是否必要，所以奖励本身必须带上这个信号。"
+  },
+  {
+   "id": "n18",
+   "page": 4,
+   "cat": "verifier",
+   "from": "Correct verdicts receive higher rewards when reached without probing",
+   "to": "premature judgments",
+   "note": "两条方向：没探查就判对，多给分；没探查就判错，多扣分。前者鼓励证据够了就停，后者防止草率下结论。具体分值见附录 G。"
+  },
+  {
+   "id": "n19",
+   "page": 4,
+   "cat": "data",
+   "from": "we initialize the JUDGE by supervised fine-tuning on",
+   "to": "match the executable outcomes",
+   "note": "冷启动：先做 SFT（拿现成示范让模型模仿），示范是教师模型生成的验证轨迹，且只保留最终结论和可执行结果一致的。作用是让在线 RL 时每次输出都是格式完整的验证过程。"
+  },
+  {
+   "id": "n20",
+   "page": 4,
+   "cat": "limit",
+   "from": "transient state such as unsaved edits and modal dialogs cannot be confirmed from screenshots",
+   "to": "PROBE actions further alter it",
+   "note": "作者承认：未保存的编辑、弹出对话框这类临时状态从截图确认不了，PROBE 的操作还会进一步改变终态。所以每个终态只采一条验证轨迹，不分叉、不做同状态分组。"
+  },
+  {
+   "id": "n21",
+   "page": 4,
+   "cat": "data",
+   "from": "We optimize the JUDGE with REINFORCE++",
+   "to": "in each batch",
+   "note": "优化算法用 REINFORCE++（RL 算法之一）。它不要求同一状态多条样本，也不需要单独的价值模型，而是用整批数据的平均和方差把奖励标准化，当作每个 token 的优势。"
+  },
+  {
+   "id": "n22",
+   "page": 5,
+   "cat": "verifier",
+   "from": "We keep VERICUA fixed and optimize the Actor with vanilla GRPO",
+   "to": "determines its reward",
+   "note": "下游用法：训练完的 VeriCUA 冻结，只把最终判定转成二值奖励（判成功为 1，否则 0），再用普通 GRPO 训练 Actor。每条 rollout 从自己的终态验证一次，不跨 rollout 共享。"
+  },
+  {
+   "id": "n23",
+   "page": 6,
+   "cat": "data",
+   "from": "tasks that require neither network access nor Google Drive",
+   "to": "using 414, 100, and 100 trajectories",
+   "note": "评测集规模：OSWorld 414 条、MobileWorld 100 条、WebArena-Verified Hard 100 条轨迹。OSWorld 只用不需要联网或 Google Drive 的任务，因为要能重放。每条轨迹带一个对所有 verifier 隐藏的可执行结果标签。"
+  },
+  {
+   "id": "n24",
+   "page": 6,
+   "cat": "limit",
+   "from": "We keep only Actor trajectories whose outcome is stable across six re-executions",
+   "to": "clean task snapshot",
+   "note": "评测只保留从干净快照重放六次结果都一致的轨迹。这样标签干净，但把结果不稳定的任务排除了，报告的一致率没有覆盖这类难判的情况。",
+   "infer": "我们的 UE 或 Maya 任务如果结果波动大，同样需要这种筛选，但要明确说明被筛掉了多少。"
+  },
+  {
+   "id": "n25",
+   "page": 7,
+   "cat": "result",
+   "from": "We train the same Qwen3-VL-4B-Thinking Actor on OSWorld",
+   "to": "varying only the frozen reward source",
+   "note": "下游对照设计：同一个 4B Actor、同样的任务、rollout 预算和超参，只换奖励来源（ZeroGUI、prompted VeriCUA、trained VeriCUA）。这样差异只来自奖励质量。"
+  },
+  {
+   "id": "n26",
+   "page": 7,
+   "cat": "result",
+   "from": "VERICUA-4B moves beyond this plateau",
+   "to": "on all three benchmarks",
+   "note": "4B 的 VeriCUA 在三个环境上一致率都最高，并在「一致率对 PROBE token」的 Pareto 前沿上。Pareto 前沿指没有别的方法能做到又更准又更省。对照：表中被动 verifier（DistRL、DigiRL、ZeroGUI）宏平均在 62.51 到 65.17，主动的 VAGEN 为 63.95。"
+  },
+  {
+   "id": "n27",
+   "page": 7,
+   "cat": "result",
+   "from": "On OSWorld, where GPT-5.4 is strongest, VERICUA-4B still leads while using",
+   "to": "WebArena-Verified",
+   "note": "GPT-5.4 最强的 OSWorld 上，4B VeriCUA 仍领先且 PROBE token 少 56.9%；手机和网页上领先幅度扩大到 11.25 和 4.25 个点。未见过的环境上优势反而更大。"
+  },
+  {
+   "id": "n28",
+   "page": 7,
+   "cat": "result",
+   "from": "Macro-average agreement rises",
+   "to": "over the prompted 4B, 2B, and 1B Judges",
+   "note": "同一模型、同一 PROBE、同一 prompt，只多了训练：4B、2B、1B 分别涨 4.50、8.62、21.11 个点。模型越小，训练带来的提升越大，说明提升来自策略而不是架构。"
+  },
+  {
+   "id": "n29",
+   "page": 8,
+   "cat": "result",
+   "key": true,
+   "from": "Agreement increases from 74.09% at K=0 to 82.00% at K=2",
+   "to": "evidence from the live environment is decisive",
+   "note": "**去掉 PROBE（K=0）一致率 74.09%，允许两轮是 82.00%。** 增益大头在第一轮，两轮就饱和。这是「主动取证确实带来新信息」的直接证据。"
+  },
+  {
+   "id": "n30",
+   "page": 8,
+   "cat": "result",
+   "from": "Agreement rises from 73.73% for the prompted Judge",
+   "to": "online RL adding",
+   "note": "73.73% 到 SFT 后 79.41%，再到在线 RL 后 82.00%，两阶段都有贡献。图 5(a) 显示 SFT 提升所有判断，在线 RL 主要提升用了 PROBE 的那部分判断。"
+  },
+  {
+   "id": "n31",
+   "page": 8,
+   "cat": "result",
+   "from": "Every trained JUDGE also surpasses Kimi-K2.6",
+   "to": "that one attempt per terminal state",
+   "note": "每个训练后的 JUDGE 都超过了给它生成 SFT 数据的老师 Kimi-K2.6（宏平均 69.62%）。作者据此认为每个终态只验证一次也够学到超过模仿的东西。"
+  },
+  {
+   "id": "n32",
+   "page": 8,
+   "cat": "result",
+   "from": "With the same frozen PROBE, VERICUA-4B directs 61.9% of PROBE actions",
+   "to": "47.6% for prompted GPT-5.4",
+   "note": "在 33 个「证据不在轨迹里但 GUI 能找到」的 OSWorld 案例上，VeriCUA 61.9% 的 PROBE 动作直指任务相关证据，GPT-5.4 为 47.6%；无意义的滚动和等待从 16.2% 降到 5.5%。PROBE 是同一个，差异只来自 JUDGE 下发的检查。"
+  },
+  {
+   "id": "n33",
+   "page": 8,
+   "cat": "verifier",
+   "key": true,
+   "from": "Given the condition without the location, the PROBE takes nine steps and never finds it",
+   "to": "never finds it",
+   "note": "**训练到底学到了什么**：Figure 6 的案例中，训练后的 check 同时写出条件和位置（在 Tools 的 Options 里），PROBE 两步查到；只写条件，PROBE 走了九步也没找到。「会主动验证」很大一部分是学会把检查写得能被执行。"
+  },
+  {
+   "id": "n34",
+   "page": 9,
+   "cat": "result",
+   "key": true,
+   "from": "Using VERICUA rewards yields the highest Pass@4 among the compared reward sources",
+   "to": "on every split",
+   "note": "**下游效果**：初始 Actor Pass@4 为 43.93%，ZeroGUI 奖励到 45.36%，prompted VeriCUA 到 45.71%，trained VeriCUA 到 47.14%（涨 3.21）。held-out 多应用任务上 17.57% 涨到 22.97%（涨 5.40）。提升不大，但三种奖励的顺序和验证质量一致。"
+  },
+  {
+   "id": "n35",
+   "page": 9,
+   "cat": "result",
+   "from": "the false-negative rate is lower",
+   "to": "4.28% vs. 5.70%",
+   "note": "Actor 训练期间追踪验证质量：trained 版与可执行结果的一致率 81.4%，prompted 版 77.8%；假阴性（真成功被判失败）4.6% 对 10.0%；PROBE 使用率 4.28% 对 5.70%。又准又省，和奖励同时看对错与是否用 PROBE 一致。"
+  },
+  {
+   "id": "n36",
+   "page": 9,
+   "cat": "task",
+   "from": "Environment synthesis automates the construction of verifiable tasks by generating resettable tasks together with",
+   "to": "executable evaluators",
+   "note": "相关路线：环境合成，即自动生成可重置任务并配套可执行判分。它能提供稳定标签，但要为每类应用造环境。VeriCUA 的定位是在判分程序不好写时补一个可学的 verifier。"
+  },
+  {
+   "id": "n37",
+   "page": 10,
+   "cat": "verifier",
+   "from": "trained with RL by replicating a problem to compare verification attempts",
+   "to": "single verification attempt",
+   "note": "和 AgentV-RL 的区别：文本推理场景里可以把同一题复制多份，让 verifier 多次尝试再比较；GUI 终态不能复制，所以才需要前面的跨终态标准化。"
+  },
+  {
+   "id": "n38",
+   "page": 14,
+   "cat": "verifier",
+   "from": "Avg@k thus measures how often verifier judgments match the executable outcome",
+   "to": "not how often the Actor succeeds",
+   "note": "主指标是 Avg@4 一致率：verifier 判定与可执行判分一致的比例，不是 Actor 成功率。主表只给一致率，没有单独的假阳性和假阴性，假阴性只在下游训练的附录 H 里出现。"
+  },
+  {
+   "id": "n39",
+   "page": 15,
+   "cat": "verifier",
+   "from": "We re-execute each Actor trajectory six times from the clean task snapshot",
+   "to": "exceeds 0.95",
+   "note": "**评测标签怎么保证干净**：每条轨迹从干净快照重放六次，要求六次可执行结果全相同，且最后三张截图的 pHash 平均相似度大于 0.95，才保留。每次验证试验再在独立的重放环境里跑，互不影响。"
+  },
+  {
+   "id": "n40",
+   "page": 15,
+   "cat": "limit",
+   "from": "We measure cost in PROBE tokens because this is the cost the verification strategy controls",
+   "to": "verification strategy controls",
+   "note": "成本只算 PROBE token，不算 JUDGE。作者的理由是 JUDGE 的分词器不同、闭源模型只报推理计数、本地小模型和 API 价格差几个数量级。这样的成本比较是不完整的。"
+  },
+  {
+   "id": "n41",
+   "page": 16,
+   "cat": "data",
+   "from": "Each backbone is fully SFT-tuned on approximately 1,270 Kimi-K2.6 verification traces retained by the",
+   "to": "rejection-sampling procedure",
+   "note": "SFT 数据量很小：约 1,270 条 Kimi-K2.6 验证轨迹，经 rejection sampling（先采很多条，只留结论正确的）筛出，来自四个 Actor 的 OSWorld 轨迹。这个量级的数据就足够冷启动。"
+  },
+  {
+   "id": "n42",
+   "page": 17,
+   "cat": "data",
+   "from": "The OSWorld training set, Actor pool, PROBE, verification budget, RL objective, and optimization configuration",
+   "to": "identical across backbones",
+   "note": "三个尺寸的 JUDGE 用完全相同的在线 RL 设置：同一个 OSWorld 训练集（Table 7 写 280 个任务）、同一批 Actor 池、同一个 PROBE、最多 K=2 轮、每轮最多 15 步 GUI 操作。"
+  },
+  {
+   "id": "n43",
+   "page": 18,
+   "cat": "verifier",
+   "key": true,
+   "from": "Under this schedule, a correct verdict is worth more without probing",
+   "to": "likely to be wrong",
+   "note": "**奖励表（Table 9）**：没探查判对 +1.0，探查后判对 +0.7，没探查判错 -0.7，探查后判错 -0.3，未决或格式无效 -1.0。作者的解释：判错时探查罚得轻，所以模型只在截图判断可能错时才值得探查。"
+  },
+  {
+   "id": "n44",
+   "page": 18,
+   "cat": "data",
+   "key": true,
+   "from": "All rewards use the executable outcome",
+   "to": "before PROBE interaction",
+   "note": "**标签来源**：奖励用的是 PROBE 动手之前就记录好的可执行结果，即环境自带的判分程序给的答案。这避免了探查操作改变状态而污染标签。"
+  },
+  {
+   "id": "n45",
+   "page": 19,
+   "cat": "result",
+   "key": true,
+   "from": "so fewer successful Actor rollouts receive a zero reward",
+   "to": "zero reward",
+   "note": "**假阴性对 RL 的影响**：真成功的 rollout 被判失败就拿到 0 奖励，等于惩罚正确行为。trained 版假阴性更低，意味着更多成功被奖励。同一段还给出：失败的 PROBE 下发从 16.6% 降到 3.2%，未决判定从 1.9% 降到 0.4%，PROBE 次数少 25%。"
+  },
+  {
+   "id": "n46",
+   "page": 20,
+   "cat": "verifier",
+   "from": "If previous criteria are provided, keep the criteria text unchanged",
+   "to": "criteria text unchanged",
+   "note": "JUDGE prompt 的一条设计：多轮验证中检查项文字不能改，只能更新状态。防止 JUDGE 在拿到证据后悄悄改标准，使判定变得宽松。"
+  },
+  {
+   "id": "n47",
+   "page": 20,
+   "cat": "verifier",
+   "from": "Do not treat action-history labels like Done, Success, Completed",
+   "to": "as evidence by themselves",
+   "note": "防止 JUDGE 被 Actor 自己的「已完成」「已保存」标签骗过：动作历史里的这些词不能当证据，必须有界面状态支持。属于 prompt 层面的反 reward hacking（钻奖励漏洞）措施。"
+  },
+  {
+   "id": "n48",
+   "page": 22,
+   "cat": "verifier",
+   "from": "Do not perform actions that modify the environment",
+   "to": "not to change the state",
+   "note": "桌面 PROBE prompt 的硬约束：禁止保存、删除、编辑，只观察。只靠 prompt 约束，论文没有说明是否在系统层面强制，所以仍可能有 PROBE 无意改状态的情况。"
+  },
+  {
+   "id": "n49",
+   "page": 23,
+   "cat": "verifier",
+   "from": "Never create, edit, delete, send, submit, purchase, or otherwise mutate data",
+   "to": "mutate data",
+   "note": "网页 PROBE 的约束更严：禁止创建、编辑、删除、发送、提交、购买，且不能离开当前 WebArena 站点。不同环境用不同的 PROBE prompt，JUDGE 保持通用。"
+  },
+  {
+   "id": "n50",
+   "page": 24,
+   "cat": "data",
+   "from": "the criteria only name the observable final-state conditions that a task implies",
+   "to": "carry no verdict",
+   "note": "few-shot 示例只示范 check 的写法（可观察的终态条件），不带结论，且与当前任务无关。这解释了为什么加示例最多只涨 0.6 个点：格式能教，取证策略教不会。"
+  }
+ ],
+ "sections": [
+  {
+   "id": "s01",
+   "page": 1,
+   "title": "摘要",
+   "from": "Reinforcement learning for computer-use agents increasingly relies on proactive",
+   "summary": "问题、方法和主要数字一屏讲完：prompted JUDGE 从 4B 到 GPT-5.4 都卡在 68% 到 70%，VeriCUA 比 few-shot GPT-5.4 高 5.36 个点且 PROBE token 少 47.6% 到 59.8%。**必读**，先读这一段就能决定要不要往下看。"
+  },
+  {
+   "id": "s02",
+   "page": 1,
+   "title": "§1 Introduction",
+   "from": "Training computer-use agents (CUAs) with reinforcement learning requires reliable rewards",
+   "summary": "讲被动验证看不到存盘内容等隐藏状态，所以需要主动验证；并提出「验证策略 = 查什么 + 何时停」和单次尝试约束（Figure 1 的幻灯片备注例子）。**必读**，核心观察和训练思路都在这里。"
+  },
+  {
+   "id": "s03",
+   "page": 3,
+   "title": "§2.1 Overview",
+   "from": "As shown in Figure 2, VERICUA verifies the Actor's task outcome using its execution",
+   "summary": "交代整体结构：可训练的 JUDGE 加冻结的 PROBE，JUDGE 先写检查项，证据不够再让 PROBE 去取。篇幅短，配 Figure 2 看一遍即可。"
+  },
+  {
+   "id": "s04",
+   "page": 3,
+   "title": "§2.2 The Judge-Probe Verification Loop",
+   "from": "Consider an Actor policy",
+   "summary": "形式化 JUDGE 与 PROBE 的循环：判定规则（全满足成功，任一违反失败，其余 uncertain）、PROBE 只检查不修复、只把证据摘要而不是整条轨迹回传。想自己实现时细读，否则扫一眼规则即可。"
+  },
+  {
+   "id": "s05",
+   "page": 4,
+   "title": "§2.3 Outcome Feedback from a Single Attempt",
+   "from": "We assign a terminal reward to each complete verification attempt",
+   "summary": "全文最核心的设计：奖励同时看判对与否和是否用了 PROBE，让单次尝试也能教会模型何时该探查。**必读**，具体分值在附录 G。"
+  },
+  {
+   "id": "s06",
+   "page": 4,
+   "title": "§2.4 Online Optimization of the Judge",
+   "from": "Before online optimization, we initialize the JUDGE by supervised",
+   "summary": "训练流程：先用结论正确的教师轨迹做 SFT，再用 REINFORCE++ 在线 RL，每个终态只采一条验证轨迹；训练后冻结，转成二值奖励给 Actor 做 GRPO。想弄清数据和标签怎么来的要读。"
+  },
+  {
+   "id": "s07",
+   "page": 5,
+   "title": "§3 Experiments",
+   "from": "Our experiments examine whether a learned verification strategy improves reward agreement",
+   "summary": "一段话列出三个问题：一致率和 PROBE 成本、跨环境泛化、下游 Actor 学习。可跳过。"
+  },
+  {
+   "id": "s08",
+   "page": 6,
+   "title": "§3.1 Experimental Setup",
+   "from": "We evaluate on the OSWorld",
+   "summary": "评测集（OSWorld 414 条、MobileWorld 和 WebArena-Verified 各 100 条轨迹）、训练只用 OSWorld、基线分被动和主动两类、评测只留重放稳定的轨迹。想知道怎么公平比较 verifier 时读。"
+  },
+  {
+   "id": "s09",
+   "page": 7,
+   "title": "§3.2 Verification Strategy Matters More Than Scale",
+   "from": "Prompted Judges from a 4B model to GPT-5.4 plateau",
+   "summary": "主结果：4B VeriCUA 宏平均 74.08% 对 few-shot GPT-5.4 的 68.72%，1B 版本也超过所有 prompted JUDGE。**必读**，配 Table 1 和 Figure 4。"
+  },
+  {
+   "id": "s10",
+   "page": 8,
+   "title": "§3.3 Generality and Behavior of the Learned Strategy",
+   "from": "MobileWorld and WebArena-Verified are unseen during training",
+   "summary": "跨环境迁移、SFT 与在线 RL 各自的贡献、PROBE 轮数消融（K=0 为 74.09%，K=2 为 82.00%）和 PROBE 换小模型不用重训，以及 Figure 6 的案例。**必读**，能看出训练到底学会了什么。"
+  },
+  {
+   "id": "s11",
+   "page": 9,
+   "title": "§3.4 Downstream Actor Learning",
+   "from": "Actor performance. Using VERICUA rewards yields the highest Pass@4",
+   "summary": "用它当奖励训 4B Actor：Pass@4 总体涨 3.21 个点，多应用 held-out 涨 5.40 个点，训练期间假阴性更低。**必读**，是整篇的最终落点，但提升幅度不大。"
+  },
+  {
+   "id": "s12",
+   "page": 9,
+   "title": "§4 Related Work",
+   "from": "Task-completion rewards for computer-use agents can be obtained from executable",
+   "summary": "把奖励来源分成可执行判分、环境合成、模型评判和主动验证几类，并说明与 AgentV-RL 的区别。想补相关论文时再读，其余可跳过。"
+  },
+  {
+   "id": "s13",
+   "page": 10,
+   "title": "§5 Conclusion",
+   "from": "We introduced VERICUA, a proactive GUI reward agent that learns what to check",
+   "summary": "重述结论：验证策略而不是模型规模决定 GUI 奖励可靠性。可跳过。"
+  },
+  {
+   "id": "s14",
+   "page": 14,
+   "title": "附录 A Evaluation Metrics",
+   "from": "Avg@k thus measures how often verifier judgments match the executable outcome",
+   "summary": "定义 Avg@k 一致率和 Pass@k。要点是一致率衡量判定与可执行结果是否一致，不是 Actor 成功率。简短，扫一眼。"
+  },
+  {
+   "id": "s15",
+   "page": 14,
+   "title": "附录 B Behavioral Evidence for Targeted Verification",
+   "from": "We analyze 33 OSWorld cases in which the recorded trajectory",
+   "summary": "在 33 个关键证据不在轨迹里的案例上比较 PROBE 行为：直接取证 61.9% 对 47.6%，无意义滚动 5.5% 对 16.2%。想看主动验证具体多了什么动作时读。"
+  },
+  {
+   "id": "s16",
+   "page": 14,
+   "title": "附录 C Reward Reliability Across Probe Scales",
+   "from": "Because the learned JUDGE decides what evidence to seek and the frozen",
+   "summary": "PROBE 从 35B-A3B 换到 9B、4B，一致率保持在 82.00% 到 82.73%，说明策略在 JUDGE 里。结论一句话，表可跳过。"
+  },
+  {
+   "id": "s17",
+   "page": 15,
+   "title": "附录 D Evaluation Details",
+   "from": "We use fixed inference settings for each component during reward evaluation",
+   "summary": "推理设置、轨迹筛选（重放六次结果一致且截图相似度大于 0.95）和成本核算只算 PROBE token 的理由。**必读**其中筛选和成本两段，设计自己的 verifier 评测时可直接借鉴。"
+  },
+  {
+   "id": "s18",
+   "page": 16,
+   "title": "附录 F Implementation Details",
+   "from": "We implement cold-start Judge SFT using LLaMA-Factory",
+   "summary": "训练和推理的硬件与软件配置，含 A800 和昇腾 910B3。想估算复现成本时看，否则跳过。"
+  },
+  {
+   "id": "s19",
+   "page": 16,
+   "title": "附录 G VeriCUA Training Details（SFT 与在线 RL）",
+   "from": "We use the same cold-start SFT procedure for the",
+   "summary": "SFT 约 1,270 条 Kimi-K2.6 轨迹、在线 RL 与下游 Actor RL 的超参。想复现训练配方时读。"
+  },
+  {
+   "id": "s20",
+   "page": 18,
+   "title": "附录 G Terminal Reward 奖励表",
+   "from": "An output counts as unresolved or invalid if the final decision is uncertain",
+   "summary": "Table 9 的五档奖励值和设计解释，标签用 PROBE 之前记录的可执行结果。**必读**，是 §2.3 的具体落地。"
+  },
+  {
+   "id": "s21",
+   "page": 18,
+   "title": "附录 H Verification Behavior During Downstream Actor RL",
+   "from": "We log every JUDGE decision from two downstream Actor-RL runs",
+   "summary": "下游训练中的验证质量：一致率 81.4% 对 77.8%，假阴性 4.6% 对 10.0%，失败的 PROBE 下发 3.2% 对 16.6%。**必读**，说明假阴性为什么影响 RL。"
+  },
+  {
+   "id": "s22",
+   "page": 19,
+   "title": "附录 I Prompt Templates",
+   "from": "For reproducibility, we provide the prompts used by VERICUA",
+   "summary": "JUDGE、PROBE 和 few-shot 参考的 prompt 原文，含只检查不修改的约束和不把动作历史标签当证据的规则。写自己的 verifier prompt 时值得照抄，其余可跳过。"
+  }
+ ],
+ "ver": "v1"
+}

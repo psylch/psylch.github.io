@@ -1,0 +1,630 @@
+{
+ "id": "craftbench-ue",
+ "title": "CraftBench-UE",
+ "full": "CraftBench-UE: Deterministic Evaluation for Coding Agents in Unreal Engine",
+ "arxiv": "2609.23142",
+ "pdf": "papers/2609.23142.pdf",
+ "meta": "University of Rochester / RamenVR · 2026-09 · 正文 11 页 + 附录共 24 页",
+ "question": "Unreal Engine 里「做对了」怎么确定性地判？",
+ "tldr": [
+  "**提交物是落盘的工程文件，不是 agent 的现场**：agent 在隔离的 UE 工程里干活，结束后只把任务允许的改动（C++ 源码、.uasset、保存的关卡等）拷到一个全新的工程副本里重建，再评分。这样评的是「保存下来的东西」，不是编辑器里没保存的状态。",
+  "**三层确定性检查，不用 LLM judge**：L1 Build 查能否编译；L2 Behavior 在固定步长的 Play-in-Editor（PIE）里用 Unreal Functional Test 跑断言；L2I Artifact 无界面加载 .uasset，查图拓扑、类继承、属性、引用、是否持久化。每道题声明自己要过哪几层。",
+  "**70 题，三种交付物**：33 道 C++、25 道 Blueprint/资产、12 道编辑器脚本（Python）。题目是「原子机制」，如滑翔、泥地涉水、冷却、中毒叠层，每题只测一个小机制。10 个玩法被写成 C++ 和 Blueprint 成对版本，指令和运行时测试相同，只换交付物。",
+  "**核心发现：过了资产检查不等于做对了玩法**：同一玩法下 C++ 完成率比 Blueprint 高 30.0 和 42.9 个百分点（两种 MCP 配置）。通过资产检查的 Blueprint 提交里，42.2% 和 50.0% 的运行时断言失败，例如能激活滑翔、能扣资源，但下落速度没变。",
+  "**接口是被评测的变量**：agent 通过 Claude Code 驱动，对比了无编辑器 MCP 的文件加 shell、Unreal MCP（3 个入口，经网关调用）和 Aura MCP（176 个入口）。作者明确说差异不能归因到单个工具。",
+  "**自承认的边界**：每个组合只跑 1 次；只测 UE 5.8 + Windows + Claude Code；不测视觉好不好看和多功能集成；其中一个 MCP 是作者所在公司的产品。"
+ ],
+ "forUs": [
+  "这是目前最接近「UE 里怎么确定性判对错」的公开做法。可以直接借它的分层：先看工程能不能构建，再看保存的资产结构，最后在引擎里跑行为断言。每层都有对应的 UE 内置机制（编译目标、无头加载、Functional Test），不用另造轮子。",
+  "「结构对但行为错」是我们采集轨迹时要警惕的：agent 或专家做出来的资产属性看着对，实际不工作。给 CUA 任务设计 verifier 时，只查资产属性不够，至少要有一层在引擎里跑起来量值（位置、速度、资源量）的检查。",
+  "提交物在全新工程里重建，是一个可以搬到 3D 任务上的 Integrity 手段：只拷任务声明的文件，过滤掉缓存、自动保存和参考资产。采 Maya、Blender 轨迹时，终态文件同样需要一个「哪些文件算提交物」的清单。",
+  "它回避了我们最难的部分：视觉质量、渲染结果、剪映这类时间线编辑成品。作者明说视觉判断类任务被排除在外。我们这类任务需要另外设计带容差的结构化检查，或者接受一部分任务只能用人审。",
+  "它的接口发现对我们采集有直接含义：agent 经 MCP 操作 UE 时，成功率和 token 成本随工具集变化很大（第一次请求的输入量中位数差 3.99 倍）。如果轨迹里混了不同接口，训练时需要把接口当成一个标签记下来。"
+ ],
+ "readFirst": [
+  {
+   "label": "§3.3 三层确定性检查",
+   "why": "L1/L2/L2I 各查什么，固定步长和「不用 LLM」的声明，全文核心",
+   "note": "n17"
+  },
+  {
+   "label": "§3.2 + 图 2 评测流程",
+   "why": "为什么要在全新工程里重放提交，参考实现和判分器怎么对 agent 隐藏",
+   "note": "n14"
+  },
+  {
+   "label": "§3.5 出题与准入",
+   "why": "三条准入标准，以及「参考解必过、原始工程必挂」两道验证",
+   "note": "n26"
+  },
+  {
+   "label": "§5.1–5.2 C++ 与 Blueprint 对照",
+   "why": "同一玩法换交付物后完成率差 30 到 43 个点；过了资产检查仍挂在行为上",
+   "note": "n32"
+  },
+  {
+   "label": "附录 A 滑翔任务示例",
+   "why": "一个题从要求到检查点再到通过/失败曲线的完整例子",
+   "note": "n43"
+  },
+  {
+   "label": "附录 B 执行配置",
+   "why": "UE 启动参数、提交收集、反泄露的实现细节",
+   "note": "n45"
+  },
+  {
+   "label": "§8 Limitations",
+   "why": "它没覆盖什么：视觉、长程、重复运行、其他 UE 版本",
+   "note": "n38"
+  }
+ ],
+ "notes": [
+  {
+   "id": "n01",
+   "page": 1,
+   "cat": "task",
+   "key": true,
+   "from": "code that compiles and runs does not necessarily implement the requested gameplay",
+   "note": "**全文要解决的问题：能编译、能运行，不等于实现了要求的玩法。** 所以评测不能停在构建成功，必须在引擎里看行为。"
+  },
+  {
+   "id": "n02",
+   "page": 1,
+   "cat": "verifier",
+   "from": "reconstructs their saved submissions in fresh projects",
+   "to": "without an LLM judge",
+   "note": "三个设计决定放在一句里：agent 在隔离环境里干活；提交物拿出来在新工程里重建；评分只用确定性检查，不用 LLM judge。"
+  },
+  {
+   "id": "n03",
+   "page": 1,
+   "cat": "task",
+   "from": "70 tasks spanning C++ source, Blueprint assets, and editor scripting",
+   "note": "三类交付物：C++ 源码、Blueprint 资产、编辑器脚本。三类对应 UE 里三种完全不同的「做东西」的方式，各自的 verifier 也不同。"
+  },
+  {
+   "id": "n04",
+   "page": 1,
+   "cat": "result",
+   "key": true,
+   "from": "pass asset checks, 42.2% and 50.0% fail explicit runtime assertions",
+   "note": "**通过资产检查的 Blueprint 提交里，约四成到一半在运行时断言上失败。** 这就是为什么只查资产属性的 verifier 会高估 agent。"
+  },
+  {
+   "id": "n05",
+   "page": 1,
+   "cat": "task",
+   "from": "Blueprint is Unreal's visual programming system, which uses node graphs saved in binary",
+   "to": "uasset files",
+   "note": "Blueprint 是存成二进制 .uasset 的节点图，不能像代码那样 diff 或直接读。这是评测 UE 比评测普通代码仓库复杂的根源：要么在引擎里加载，要么拿不到内容。"
+  },
+  {
+   "id": "n06",
+   "page": 1,
+   "cat": "verifier",
+   "from": "differentiate between structural requirements, like a valid asset reference",
+   "to": "decelerating while gliding",
+   "note": "把要求分成「结构类」（引用有效、能编译）和「行为类」（滑翔时减速），两类要用不同机制检查。这个二分法是整套三层检查的来源。"
+  },
+  {
+   "id": "n07",
+   "page": 2,
+   "cat": "verifier",
+   "from": "Runtime checks observe behavior in Play-in-Editor",
+   "to": "inside the editor",
+   "note": "PIE 是 UE 在编辑器里直接跑游戏的模式。行为检查跑在 PIE 里，意味着需要一个完整的编辑器实例，而不是纯命令行进程。"
+  },
+  {
+   "id": "n08",
+   "page": 2,
+   "cat": "task",
+   "from": "Figure 1: Sample benchmark tasks across the three deliverable groups",
+   "note": "图 1 举了三类题：滑翔（C++）、泥地涉水（Blueprint）、生成六个命名物体并存关卡（Python）。每题都有 3 条左右的命名检查，例如「下落速度变慢」「能量耗尽后恢复正常下落」。"
+  },
+  {
+   "id": "n09",
+   "page": 3,
+   "cat": "verifier",
+   "key": true,
+   "from": "Unreal evaluation is comparatively more complex since the framework",
+   "to": "preserving binary assets and saved changes",
+   "note": "**为什么不能直接套 Harbor 这类容器框架：UE 评测要控制一个带版本的编辑器和 PIE，还要保住二进制资产和保存下来的改动。** 作者把任务包定义为：起始工程、prompt、可写区域、引擎版本、verifier、参考实现。"
+  },
+  {
+   "id": "n10",
+   "page": 3,
+   "cat": "task",
+   "from": "The unit of evaluation is an atomic mechanism task",
+   "to": "which project files or assets the agent may change",
+   "note": "任务单元是「原子机制」，指令里还要明说允许改哪些文件或资产。可写范围声明得清楚，后面才能只收集这些文件去重建。"
+  },
+  {
+   "id": "n11",
+   "page": 3,
+   "cat": "task",
+   "from": "they do not combine unrelated features merely to increase difficulty",
+   "note": "明确不靠堆砌无关功能提高难度。一题只测一小组引擎机制，失败时能定位到是哪条命名检查没过。代价是测不到多功能集成。"
+  },
+  {
+   "id": "n12",
+   "page": 3,
+   "cat": "task",
+   "from": "Epic's in-editor Unreal MCP server exposes tools over local HTTP",
+   "to": "game thread",
+   "note": "Epic 官方的 UE 编辑器内置 MCP 服务器通过本地 HTTP 暴露工具，并把调用派发到游戏线程执行。论文把这类接口归为「创作工具集」，自己评的是它们产出的落盘提交。"
+  },
+  {
+   "id": "n13",
+   "page": 3,
+   "cat": "verifier",
+   "from": "an LLM judge then considers the test results and implementation work",
+   "note": "GameEngineBench 在 UE 的 C++ 任务上先跑构建和运行时测试，再让 LLM judge 看结果和实现。CraftBench-UE 的区别是不让任何 LLM 参与最终判定。"
+  },
+  {
+   "id": "n14",
+   "page": 4,
+   "cat": "verifier",
+   "from": "This clean replay separates the submitted artifact from unrelated workspace modifications",
+   "note": "**全新工程重放的目的：把提交物和工作区里的杂物分开。** agent 工作期间产生的缓存、临时文件、测试脚手架都不会带进评分，也就堵死了靠残留物通过的路。"
+  },
+  {
+   "id": "n15",
+   "page": 4,
+   "cat": "task",
+   "from": "Reference implementations and verifier sources are withheld during authoring",
+   "note": "参考实现和 verifier 源码在 agent 工作期间不可见；检测到暴露的运行直接排除出评分（不算失败）。具体怎么藏见附录 B.1。"
+  },
+  {
+   "id": "n16",
+   "page": 4,
+   "cat": "verifier",
+   "from": "Compile the relevant editor and game targets",
+   "to": "are failures",
+   "note": "**L1 Build：编译编辑器和游戏两个 target，由提交引起的编译或链接错误即失败。** 对 Blueprint 任务也要求通过构建（Table 1 里 25 道 BP 题全部要 Build）。"
+  },
+  {
+   "id": "n17",
+   "page": 4,
+   "cat": "verifier",
+   "key": true,
+   "from": "A fixed-timestep Play-in-Editor (PIE) session will start and evaluate named",
+   "to": "Unreal Functional Tests",
+   "note": "**L2 Behavior：固定步长的 PIE 会话里，在指定时间点用 Unreal Functional Test 评命名断言，断言关注状态转移和变量变化。** Functional Test 是 UE 自带的关卡内脚本化检查框架，可用 C++ 或 Blueprint 写。"
+  },
+  {
+   "id": "n18",
+   "page": 4,
+   "cat": "verifier",
+   "key": true,
+   "from": "Load the saved assets in the editor without its graphical interface",
+   "to": "references, or persistence",
+   "note": "**L2I Artifact：无界面加载保存的资产，查图拓扑、类继承、带类型的属性、引用和持久化。** 这一层把「看着对」变成可查的结构事实，也是只能用在落盘资产上的一层。"
+  },
+  {
+   "id": "n19",
+   "page": 4,
+   "cat": "verifier",
+   "from": "A fixed simulation timestep (1/60 second by default)",
+   "to": "being tested",
+   "note": "固定 1/60 秒步长让时间相关检查在不同机器上可比，同时每题单独设数值容差。这是 UE 里处理物理和计时非确定性的主要手段，细节见附录 B。"
+  },
+  {
+   "id": "n20",
+   "page": 4,
+   "cat": "verifier",
+   "key": true,
+   "from": "No LLM reads the submission, trace, screenshot, or test report",
+   "note": "**判定链路里没有 LLM。** 截图只留作诊断，不改变最终分数。好处是可复现、无 judge 偏差；代价是凡是要靠看画面才能判的任务都被排除。"
+  },
+  {
+   "id": "n21",
+   "page": 5,
+   "cat": "limit",
+   "from": "This excludes creative tasks whose success depends on visual judgment",
+   "note": "确定性检查覆盖不到的就是视觉判断类任务，作者在这里直接排除而不是硬判。对我们意味着渲染质量、构图、剪辑节奏这类需要另想办法。"
+  },
+  {
+   "id": "n22",
+   "page": 5,
+   "cat": "task",
+   "from": "Of the 70 tasks, 50 start from the Unreal Engine 5.8 Third Person template",
+   "to": "customized template",
+   "note": "50 题用 UE 官方 Third Person 模板，20 题用作者定制的模板。起始工程用标准模板，复现和复用成本低；定制模板用来放不依赖角色的小场景。"
+  },
+  {
+   "id": "n23",
+   "page": 5,
+   "cat": "task",
+   "from": "The harness uses each task's declared checks since not all check types are needed",
+   "to": "check types are needed for each task",
+   "note": "三层不是每题都过：C++ 题 33 道全查 Build 和 Runtime；Blueprint 题 25 道里 15 道查 Runtime、20 道查 Asset；Python 题 12 道只查 Asset（保存后的状态）。"
+  },
+  {
+   "id": "n24",
+   "page": 5,
+   "cat": "task",
+   "from": "the only difference is the requested deliverable type",
+   "to": "BP additionally requires saved assets",
+   "note": "成对任务的设计：接口和玩法指令一样，运行时验证器共用，只是交付物不同；Blueprint 版额外要保存资产。这样 C++/BP 的差距才能归因到「交付物形式」。"
+  },
+  {
+   "id": "n25",
+   "page": 5,
+   "cat": "data",
+   "from": "Team members, including artists, designers, and engineers",
+   "to": "use agents to perform",
+   "note": "**出题来源：团队里的美术、设计、工程师提出自己平时让 agent 做的事，主作者按三条准入标准筛。** 标准是：能用显式检查验证；在干净工程里可观察、无需看解答；能通过声明的交付物实现。论文没有给提案数和淘汰率。"
+  },
+  {
+   "id": "n26",
+   "page": 5,
+   "cat": "data",
+   "key": true,
+   "from": "at least one reference solution that passes all required checks",
+   "to": "unmodified starting project fails",
+   "note": "**两道准入验证：参考解必须全过，原始起始工程必须失败。** 和 Terminal-Bench 的参考解加 dummy agent 同构。第二条保证检查不是一开始就满足，第一条保证题目可解、检查没写错。"
+  },
+  {
+   "id": "n27",
+   "page": 6,
+   "cat": "task",
+   "key": true,
+   "from": "MCP1 exposes catalog discovery and a gateway for editor operations",
+   "note": "**接口设计差别：Unreal MCP（MCP1）只有 3 个入口，agent 先查目录再经网关调用具体操作；Aura MCP（MCP2）直接暴露 176 个入口，含 Blueprint 和 Python 的委托工具。** 附录 B 提醒入口数不等于覆盖面，因为网关能访问很多操作。"
+  },
+  {
+   "id": "n28",
+   "page": 6,
+   "cat": "task",
+   "from": "completion differences are therefore not attributable to editor tools alone",
+   "note": "在 Blueprint 和 Python 题上，MCP2 没有原生写文件、编辑和 shell 工具，MCP1 有。两者差别混杂了编辑器工具和文件权限，所以不能下「哪个 MCP 更好」的结论。"
+  },
+  {
+   "id": "n29",
+   "page": 6,
+   "cat": "task",
+   "from": "The prompt instructs agents to perform at most one final PIE playtest",
+   "to": "repeated playtest loops",
+   "note": "为避免预试跑里观察到的反复试玩，prompt 限定最多一次 PIE 试玩，但 harness 不强制。这是个限制 agent 自验证的设计，会压低 agent 的实测行为，后面 Discussion 和 Limitations 都提到。"
+  },
+  {
+   "id": "n30",
+   "page": 6,
+   "cat": "result",
+   "from": "An attempt is successful if the agent finishes within this budget",
+   "to": "passes all checks",
+   "note": "成功 = 40 分钟内收工且全部检查通过，单次 pass@1。超过 40 分钟但在 60 分钟上限内的提交仍保留用于分析，所以论文里有「按时」和「迟交」两套口径。"
+  },
+  {
+   "id": "n31",
+   "page": 6,
+   "cat": "result",
+   "from": "C++ completion is 180/231 (77.9%) with file/shell tools",
+   "note": "C++ 完成率：文件加 shell 77.9%，MCP1 86.1%，MCP2 87.9%。Blueprint 两种 MCP 都是 110/175（62.9%）；Python 73.8% 和 78.6%。",
+   "infer": "C++ 加 MCP 收益有限，可能是因为纯文件加 shell 就足以写 C++，论文没有专门验证。"
+  },
+  {
+   "id": "n32",
+   "page": 7,
+   "cat": "result",
+   "key": true,
+   "from": "Within the deadline, no BP submissions pass the runtime checks but fail the asset checks",
+   "note": "**去掉 Blueprint 的资产检查，完成数一个都没变：** 过了运行时检查的 BP 提交必然也过了资产检查。所以 Blueprint 差，不是资产检查太苛刻，而是玩法本身没做对。"
+  },
+  {
+   "id": "n33",
+   "page": 7,
+   "cat": "result",
+   "key": true,
+   "from": "Both configurations complete 34/35 runs (97.1%) on these five tasks",
+   "note": "**Blueprint 的失败集中在完整玩法：** 基础图和局部修复 97.1%；资产配置 72.9% 和 80.0%；十个玩法题降到 35.7% 和 28.6%。局部操作 agent 做得好，多部分协调才是难点。"
+  },
+  {
+   "id": "n34",
+   "page": 8,
+   "cat": "result",
+   "from": "successfully activate an ability but fail to produce its required effect",
+   "to": "resource check",
+   "note": "典型失败形态：能力能触发，但没产生要求的效果。滑翔 7 个提交全部能激活、6 个扣了 Power，但没一个做出滑翔。这正是单查资源消耗会漏掉的情况。"
+  },
+  {
+   "id": "n35",
+   "page": 8,
+   "cat": "result",
+   "key": true,
+   "from": "Asset readbacks are more frequent than PIE state readbacks",
+   "note": "**agent 更常读回资产，很少读回运行中的状态：** PIE 状态读回只出现在 24/175（MCP1）和 30/175（MCP2）的 BP 运行里，资产读回约 149 和 165 次。agent 自己验证的是「图长什么样」，不是「游戏里做了什么」。",
+   "infer": "要训练 agent 自验证行为，轨迹里需要有「运行起来量值再改」的样本，而不仅仅是读回资产。"
+  },
+  {
+   "id": "n36",
+   "page": 8,
+   "cat": "result",
+   "from": "every graph-writing error was followed by a changed request for the same graph",
+   "note": "39 次按时完成的 MCP1 运行里，所有写图错误都被后续修好了，仍有 16 个提交最终失败，其中 15 个挂在运行时断言。写图没报错只说明图被接受，不说明玩法对。"
+  },
+  {
+   "id": "n37",
+   "page": 9,
+   "cat": "verifier",
+   "from": "checking resource consumption alone would not detect an implementation that leaves",
+   "to": "descent unchanged",
+   "note": "出题的经验：一个机制里的几项要求要互相咬合（减速、耗能、耗尽后恢复），检查必须覆盖每个行为和它们之间的转换，否则漏掉的就是偏科实现。"
+  },
+  {
+   "id": "n38",
+   "page": 9,
+   "cat": "limit",
+   "from": "The 70 tasks are selected for explicit, checkable outcomes rather than sampled representatively",
+   "note": "**局限一：题是按「可验证」挑的，不代表游戏开发的真实分布。** 不测视觉吸引力和多功能整合成完整游戏。可验证性在这里同时是优点和边界。"
+  },
+  {
+   "id": "n39",
+   "page": 9,
+   "cat": "limit",
+   "from": "Each task–model–configuration run has one attempt",
+   "note": "**局限二：每个组合只跑一次，** 没有重复运行方差，也没有长程任务和不限试玩次数的结果。所以单模型的名次不稳，更可靠的是「C++ 比 BP 好」这类聚合结论。"
+  },
+  {
+   "id": "n40",
+   "page": 9,
+   "cat": "limit",
+   "from": "All experiments use Unreal Engine 5.8 on Windows through Claude Code",
+   "note": "**局限三：只测了一个引擎版本、一个操作系统、一个 agent 运行时。** 其他 UE 版本、操作系统和 agent 框架下结论是否成立没有验证。"
+  },
+  {
+   "id": "n41",
+   "page": 10,
+   "cat": "limit",
+   "from": "The authors' organization develops MCP2, whose implementation remains proprietary",
+   "note": "利益披露：被比较的 MCP2 是作者所在机构开发的，实现闭源。同一套题和 verifier 对两个 MCP 一视同仁，但读 MCP1 和 MCP2 对比时要把这一点考虑进去。"
+  },
+  {
+   "id": "n42",
+   "page": 10,
+   "cat": "data",
+   "from": "Task instructions, starting-project configurations, verifier, and reference implementations are included",
+   "note": "计划开源的内容很全：指令、起始工程配置、verifier、参考实现、保留的提交和轨迹。用户需自备 UE，引擎二进制和 MCP2 内部实现不分发。拿来改造自己的题库成本较低。"
+  },
+  {
+   "id": "n43",
+   "page": 12,
+   "cat": "verifier",
+   "from": "The runtime fixture requests ability activation and observes descent and Power",
+   "to": "scheduled checkpoints",
+   "note": "滑翔题的运行时检查是这样的：fixture 触发能力，然后在预设时间点量下落速度和 Power。图 4 里通过的轨迹速度降到约 122 cm/s，失败的仍是 1405 cm/s，Power 都在消耗。"
+  },
+  {
+   "id": "n44",
+   "page": 13,
+   "cat": "task",
+   "from": "MCP2 exposes 176 entry points, including direct editing and",
+   "to": "delegated tools",
+   "note": "MCP2 的工具覆盖：资产和 Blueprint 查看、图编辑和编译、资产创建编辑、文本和 C++ 文件编辑加编辑器内 Python 执行、PIE 控制等。初始化失败也算失败尝试。"
+  },
+  {
+   "id": "n45",
+   "page": 13,
+   "cat": "verifier",
+   "key": true,
+   "from": "Behavior (L2) checks launch the editor with",
+   "to": "from the first frame",
+   "note": "**确定性的 UE 实现：用 -deterministic -FPS=60 启动编辑器，从第一帧起固定 1/60 秒步长；任务可以声明其他步长，在单独会话里重放，且全部要通过。** 检查点按世界游戏时间算，从开始游玩起计，而不是从 fixture 启动起计。"
+  },
+  {
+   "id": "n46",
+   "page": 13,
+   "cat": "verifier",
+   "from": "This procedure makes the saved submission, rather than unsaved editor state",
+   "to": "object of evaluation",
+   "note": "提交收集：按起始工程的提交清单（manifest）收变更或新增的文件，套到新工程，再施加任务额外的文件和配置约束。评的是落盘文件，不是编辑器里没保存的内存状态。"
+  },
+  {
+   "id": "n47",
+   "page": 13,
+   "cat": "limit",
+   "from": "These differences limit attribution of completion or timing differences to MCP access alone",
+   "note": "复现层面的诚实说明：C++ 基线用两台机器、MCP 对比用一台，同配置 RTX 5080；驱动版本在不同组里有差异，有些记录缺版本信息。时间对比因此只能当作粗略参考。"
+  },
+  {
+   "id": "n48",
+   "page": 14,
+   "cat": "verifier",
+   "from": "replaces runtime test bodies with stubs while retaining the build definitions",
+   "note": "**反泄露的做法：** 工作期间移走参考实现、verifier 源码和能暴露它们的仓库元数据，删掉其他任务的脚手架，把运行时测试体换成桩但保留构建定义，评分时再在干净工程里恢复。同时监控被藏的路径，发现暴露就整次作废。"
+  },
+  {
+   "id": "n49",
+   "page": 20,
+   "cat": "data",
+   "from": "first-request input is 3.99 times as large under MCP2 as under MCP1",
+   "note": "**接口的成本：** MCP2 的首次请求输入中位数是 MCP1 的 3.99 倍（多约 8.2 万 token），因为 176 个工具描述都要放进上下文。按账单，DeepSeek 的 MCP2/MCP1 费用比中位数是 0.21，其余五个有账单的模型是 1.80 到 2.69。"
+  },
+  {
+   "id": "n50",
+   "page": 21,
+   "cat": "data",
+   "from": "Charges cover full agent sessions, including requests after the deadline",
+   "to": "unobserved inference inside tools",
+   "note": "成本口径：只含 agent 会话的推理费用（超时后的请求也算），不含引擎计算，也不含工具内部的推理。只有 C++ 题有可用账单，BP、Python 和直连 Anthropic 的 Sonnet 都没有。引擎侧算力成本论文没给。"
+  }
+ ],
+ "sections": [
+  {
+   "id": "s01",
+   "page": 1,
+   "title": "摘要",
+   "from": "Building gameplay features in a game engine requires more than code",
+   "summary": "一句话讲清整套做法：隔离环境里做、全新工程里重建、三类确定性检查、不用 LLM judge；给出 70 题和核心结论（C++ 完成率比 Blueprint 高 30.0 和 42.9 个百分点）。**必读**，两分钟读完。"
+  },
+  {
+   "id": "s02",
+   "page": 1,
+   "title": "§1 Introduction",
+   "from": "Implementing a gameplay feature involves more than producing code that compiles",
+   "summary": "说明为什么 UE 评测难：功能横跨 C++、Blueprint 二进制资产和 Niagara 等系统，要区分结构要求和行为要求。后半是贡献列表，可以略读。"
+  },
+  {
+   "id": "s03",
+   "page": 2,
+   "title": "§2 Related Work",
+   "from": "Tests can reject a valid solution if they impose requirements",
+   "summary": "梳理执行式评测、游戏开发 bench（GameDevBench、GameEngineBench、OpenGameEval 等）和 MCP 接口研究。要点是别的 UE 工作有的用 LLM judge，本文不用。其余可跳过，想比对手看附录 G。"
+  },
+  {
+   "id": "s04",
+   "page": 3,
+   "title": "§3.1 评测设置与任务范围",
+   "from": "CraftBench-UE measures whether an agent can implement a bounded gameplay",
+   "summary": "定义「原子机制任务」：一题只测一小组引擎机制，指令里写明允许改哪些文件。读一遍就够，是出题粒度的依据。"
+  },
+  {
+   "id": "s05",
+   "page": 3,
+   "title": "§3.2 评测 Harness",
+   "from": "Container-oriented frameworks such as Harbor package instructions, environments",
+   "summary": "解释为什么 Harbor 式容器框架不够用，以及任务包由哪些部分构成，提交怎么在新工程里重放。**必读**，是整套设计的骨架。"
+  },
+  {
+   "id": "s06",
+   "page": 4,
+   "title": "§3.3 基于执行的确定性评分",
+   "from": "Each task specifies which of the following checks its submission must pass",
+   "summary": "L1 构建、L2 PIE 行为断言（Functional Test）、L2I 无界面资产检查，加固定步长和「没有 LLM 参与」的声明。**必读**，全文最值得细读的一节。"
+  },
+  {
+   "id": "s07",
+   "page": 5,
+   "title": "§3.4 基准与交付物",
+   "from": "The task suite contains 33 C++ tasks, 25 Blueprint tasks, and 12",
+   "summary": "给出 33/25/12 的任务分布、两种起始工程模板，以及表 1 各类题要过哪几层。10 个 C++/BP 成对任务的设计也在这里。值得读，篇幅很短。"
+  },
+  {
+   "id": "s08",
+   "page": 5,
+   "title": "§3.5 出题与验证",
+   "from": "The tasks are designed around common Unreal workflows and informed by",
+   "summary": "出题来源（团队成员提案）、三条准入标准，以及「参考解必过、原始工程必挂」。**必读**，但论文没写题目的淘汰率和审查耗时。"
+  },
+  {
+   "id": "s09",
+   "page": 5,
+   "title": "§4.1 模型与工具配置",
+   "from": "The two editor-tool configurations use Unreal MCP (MCP1) and Aura MCP",
+   "summary": "七个模型、两种编辑器 MCP（Unreal MCP 和 Aura MCP），都经 Claude Code 驱动。读一眼配置就行，工具差异看表 2。"
+  },
+  {
+   "id": "s10",
+   "page": 6,
+   "title": "§4.2 运行与完成判定",
+   "from": "one scored attempt. The agent starts in a fresh project with the task",
+   "summary": "pass@1，40 分钟授权时限，60 分钟硬上限，prompt 限定最多一次 PIE 试玩。成功标准的口径在这里，看一遍。"
+  },
+  {
+   "id": "s11",
+   "page": 6,
+   "title": "§4.3 成对对照与观察",
+   "from": "For each model, we compare its completion count under the two MCP settings",
+   "summary": "说明怎么比：MCP 之间配对、C++ 与 Blueprint 配对，并去掉资产检查单看玩法检查。分析方法交代，可略读。"
+  },
+  {
+   "id": "s12",
+   "page": 6,
+   "title": "§5 Results",
+   "from": "We report task completion for each model and configuration, then examine",
+   "summary": "结果总览：C++ 77.9%/86.1%/87.9%，Blueprint 62.9%，Python 73.8%/78.6%。数字直接看表和图，正文可略读。"
+  },
+  {
+   "id": "s13",
+   "page": 6,
+   "title": "§5.1 C++ 与 Blueprint 同一玩法对照",
+   "from": "The ten paired gameplay tasks compare the same requested behavior across C++",
+   "summary": "核心发现：同一玩法下 C++ 明显好于 Blueprint，去掉资产检查完成数不变，差距集中在完整玩法而非局部编辑。**必读**。"
+  },
+  {
+   "id": "s14",
+   "page": 7,
+   "title": "§5.2 Blueprint 差在哪里",
+   "from": "On the ten paired gameplay tasks, seven additional MCP1 BP runs",
+   "summary": "通过资产检查却挂在运行时断言的提交占 34.3% 和 40.0%，典型是能激活能力、不产生效果。**必读**，是「结构对不等于行为对」的证据。"
+  },
+  {
+   "id": "s15",
+   "page": 8,
+   "title": "§5.3 agent 如何检查自己的工作",
+   "from": "We examine how agents respond to editing feedback and check their work",
+   "summary": "统计 agent 的自验证：资产读回和编译远多于 PIE 状态读回，写图报错修好后仍常失败。想知道 agent 怎么自查的值得读。"
+  },
+  {
+   "id": "s16",
+   "page": 9,
+   "title": "§6 Discussion",
+   "from": "Design tasks with interacting gameplay requirements. A glide feature must slow descent",
+   "summary": "三条设计建议：要求要互相咬合、资产要放进引擎系统里验、给 agent 配验证流程。偏观点，快速读。"
+  },
+  {
+   "id": "s17",
+   "page": 9,
+   "title": "§7 Conclusion",
+   "from": "CraftBench-UE evaluates coding agents through their saved source and assets",
+   "summary": "重述结论，可跳过。"
+  },
+  {
+   "id": "s18",
+   "page": 9,
+   "title": "§8 Limitations",
+   "from": "The 70 tasks are selected for explicit, checkable outcomes",
+   "summary": "题目按可验证性选、每组合只跑一次、只测 UE 5.8 加 Windows 加 Claude Code。**必读**，三条都直接限定了结论的外推范围。"
+  },
+  {
+   "id": "s19",
+   "page": 12,
+   "title": "附录 A 任务验证示例",
+   "from": "The glide task in Figure 4 asks the agent to slow a falling character",
+   "summary": "用滑翔任务走一遍要求、检查点、通过与失败曲线，通过时 2.3 秒下落速度 122 cm/s，失败时 1405 cm/s。**必读**，最直观地说明为什么只查资源消耗不够。"
+  },
+  {
+   "id": "s20",
+   "page": 13,
+   "title": "附录 B 执行配置与提交处理",
+   "from": "The experiments use Unreal Engine 5.8 on Windows with Claude Code as the agent driver",
+   "summary": "模型接入方式、两个 MCP 的工具暴露、-deterministic -FPS=60 启动参数、提交收集规则，以及硬件差异的坦白。**必读**，是 UE 确定性评测的实现细节。"
+  },
+  {
+   "id": "s21",
+   "page": 14,
+   "title": "附录 B.1 评测材料的访问控制",
+   "from": "Before authoring, the harness withholds reference implementations, verifier sources",
+   "summary": "工作期间移走参考实现和 verifier、测试体换桩、监控暴露并作废。想自建 UE bench 时可直接照做。"
+  },
+  {
+   "id": "s22",
+   "page": 14,
+   "title": "附录 D.1 轨迹分析定义",
+   "from": "The trajectory analysis covers 693 C++ transcripts, 350 BP transcripts",
+   "summary": "定义资产读回、PIE 状态读回、图修订等统计口径。做轨迹分析时参考，其余可跳过；附录 C 的评分明细和表格也可跳过。"
+  },
+  {
+   "id": "s23",
+   "page": 19,
+   "title": "附录 D.3 通过资产检查后的运行时失败",
+   "from": "Of the 140 BP attempts on matched gameplay tasks, runtime reports are retained",
+   "summary": "把 52 个通过资产检查却挂运行时的提交按失败类别归类，并解释滑翔等 13 个例子。想看失败样例时读，否则可跳过。"
+  },
+  {
+   "id": "s24",
+   "page": 19,
+   "title": "附录 E 成本与耗时",
+   "from": "229 have identical retained task prompts and 185 have both",
+   "summary": "MCP2 首次请求输入是 MCP1 的 3.99 倍，账单中位数比 1.80 到 2.69（DeepSeek 为 0.21），缓存命中率差别很大。**必读**，是论文里唯一的成本数据，且只覆盖 C++。"
+  },
+  {
+   "id": "s25",
+   "page": 21,
+   "title": "附录 F 任务清单",
+   "from": "Table 16 lists every task in the primary study, its starting project",
+   "summary": "70 题的目录名、起始工程和需过的层，另有 47 道因时间预算未纳入的任务。想借题目命名和分类时翻一下，否则可跳过。"
+  }
+ ],
+ "ver": "v1"
+}

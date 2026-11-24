@@ -1,0 +1,746 @@
+{
+ "id": "kimi-k3",
+ "title": "Kimi K3",
+ "full": "Kimi K3: Open Frontier Intelligence",
+ "arxiv": "2607.24653",
+ "pdf": "papers/2607.24653.pdf",
+ "meta": "Moonshot AI · 2026-07 · 47 页（正文 34 页 + 附录）",
+ "question": "一个前沿模型的后训练实际怎么做：RL 在通用、通用 agent、coding agent 三个领域各用什么环境、任务和奖励？",
+ "tldr": [
+  "**三段式后训练**：SFT 冷启动，然后三个领域乘三个 reasoning effort 档位共训 9 个 RL 专家，最后用 multi-teacher on-policy distillation 合并成一个模型。",
+  "**环境是白盒可组合的**：把 agent harness 拆成工具接口、system prompt、上下文管理、skills、memory、subagents 等模块，训练时随机组合，避免模型过拟合某一家 harness。",
+  "**奖励分三种**：能验证的用确定性规则（kernel 先过数值正确性再按速度给 0 到 1 的分；web 开发做功能和像素检查，构建失败或造假置零；AET 由独立 verifier 查终态）；不能验证的用 agentic GRM 评委按 rubric 做组内两两比较；个人助手任务里每个事件各有规则或 LLM 判据。",
+  "**防作弊靠结构**：agent 与 verifier 隔离、公开 verifier 配隐藏 verifier、提交次数受限且超出扣分、kernel 有持续追加的作弊检测、评委有长度惩罚、微 VM 沙箱防止模型搞坏环境。",
+  "**reasoning effort 用奖励训**：超出 token 预算的轨迹奖励直接改成 −1，先训 max 档再逐步收紧预算得到 high 和 low，最后靠蒸馏合并。",
+  "**评测与局限**：评测混合官方、第三方引用和内部 bench，在 harness、子集、硬件上有改动，闭源模型结果含 fallback 和拒答。作者承认总体落后于两个闭源模型，研究级推理和部分 agent 行为评测较弱。论文没有给 RL 任务数量、奖励权重和作弊发生率。"
+ ],
+ "forUs": [
+  "AET 的任务定义（初始状态、受约束目标、工具动作空间、预算、独立 verifier，只查终态）可以直接当 UE、Maya 任务的模板。再加上它的三个防作弊设计：公开诊断 verifier 加隐藏 verifier，提交次数限制，agent 与 verifier 隔离。",
+  "kernel 的『硬门槛加连续分』可以搬到 3D 任务：先过硬性检查（工程能打开、渲染不报错、导出文件合法），再按质量连续给分；web 开发『造假置零』对应 UE 里用预制资产冒充或贴图伪造。",
+  "白盒 harness 的做法说明：训练数据不该绑死一种接口。我们采集的 GUI 轨迹最好带上足够的状态信息，后面能同时改写成 MCP 调用或代码动作。这是推断。",
+  "视觉和 3D 产物的判分，这篇给出的最接近答案是 web 开发的组合：确定性功能测试、结构和像素相似度、模型看截图并交互、再加专家盲评。但评委 prompt 和各部分权重没公开，需要自己设计。",
+  "这篇没有回答的：CUA 的 GUI 操作环境怎么搭，视频剪辑的训练环境和评测（只在案例里展示了从 56 段素材剪出宣传片），以及 RL 数据量级。这些要靠 UI-TARS-2 等其他篇补。"
+ ],
+ "readFirst": [
+  {
+   "label": "§4.1.2 三领域与 9 个专家",
+   "why": "后训练的整体结构，其余都挂在这上面",
+   "note": "n13"
+  },
+  {
+   "label": "§4.1.2 Reasoning Effort RL",
+   "why": "用奖励改写来控制思考长度，档位怎么得到",
+   "note": "n17"
+  },
+  {
+   "label": "§4.1.2 Agentic GRM",
+   "why": "不可验证任务怎么给奖励，评委协议和长度防作弊",
+   "note": "n19"
+  },
+  {
+   "label": "§4.2.2 知识图谱任务合成",
+   "why": "任务从哪来、怎么按分布采样",
+   "note": "n27"
+  },
+  {
+   "label": "§4.2.4 kernel 奖励与反作弊",
+   "why": "门槛加连续分的奖励最完整的例子",
+   "note": "n30"
+  },
+  {
+   "label": "§4.2.6 AET 的 verifier 设计",
+   "why": "终态奖励和三招防作弊",
+   "note": "n35"
+  },
+  {
+   "label": "§5.3.2 AgentENV 沙箱",
+   "why": "为什么要微 VM，fork 用来打分",
+   "note": "n38"
+  }
+ ],
+ "notes": [
+  {
+   "id": "n01",
+   "page": 1,
+   "cat": "data",
+   "from": "highlights reinforcement learning across general, agentic, and coding domains",
+   "to": "reasoning-effort levels",
+   "note": "摘要把后训练概括成：三个 RL 领域（通用、agent、coding）乘以多个 reasoning effort 档位。reasoning effort 指模型『想多久』的档位，档位越高，思考越长，花的 token 越多。"
+  },
+  {
+   "id": "n02",
+   "page": 1,
+   "cat": "limit",
+   "from": "While its overall performance still trails the most powerful proprietary models",
+   "to": "Claude Fable 5 and GPT-5.6 Sol",
+   "note": "作者在摘要里就承认总体落后于 Claude Fable 5 和 GPT-5.6 Sol，只声称在自己选的评测套件里领先其余模型。看后面的分数时要记得套件是作者挑的。"
+  },
+  {
+   "id": "n03",
+   "page": 2,
+   "cat": "task",
+   "from": "Training environments include verifiable search and professional knowledge work",
+   "to": "autonomous execution tasks",
+   "note": "RL 环境的总目录：可验证搜索、专业知识工作、软件工程与 kernel 优化、带视觉工具的多模态推理、持久助手、web 开发、自主执行任务。§4.2 按类逐个展开。"
+  },
+  {
+   "id": "n04",
+   "page": 2,
+   "cat": "data",
+   "from": "Domain- and effort-specialized policies are consolidated into a unified model",
+   "to": "multi-teacher on-policy distillation",
+   "note": "按领域、按档位分别训出专家后，再合并成一个模型，用的是 multi-teacher on-policy distillation。蒸馏就是让学生模型去模仿老师模型的输出。细节见 §4.1.3。"
+  },
+  {
+   "id": "n05",
+   "page": 4,
+   "cat": "data",
+   "from": "Each block contains 3 KDA layers followed by 1 Gated MLA layer",
+   "to": "giving a 3:1 mixing ratio",
+   "note": "架构只记一点：每个 block 是 3 层 KDA（线性注意力，只保留固定大小的状态）加 1 层 Gated MLA（全局注意力），比例 3:1。这是为了让 1M 上下文可承受。不展开。"
+  },
+  {
+   "id": "n06",
+   "page": 6,
+   "cat": "data",
+   "from": "each layer selectively retrieves representations from all preceding layers",
+   "to": "rather than accumulating them uniformly",
+   "note": "Attention Residuals：每一层按学到的权重去取前面各层的输出，而不是把它们均匀累加成一个残差。相当于把注意力用在深度方向。属于架构改动，与后训练部分无关。"
+  },
+  {
+   "id": "n07",
+   "page": 8,
+   "cat": "data",
+   "from": "Imbalanced routing slows expert-parallel training and may leave some experts poorly trained",
+   "note": "MoE 每层有 896 个专家，每个 token 激活 16 个，专家之间负载不均会拖慢训练，还会让部分专家训不好。Quantile Balancing 用路由分数的分位数直接设每个专家的偏置来均衡负载。这是预训练稳定性的做法之一。"
+  },
+  {
+   "id": "n08",
+   "page": 10,
+   "cat": "data",
+   "from": "we substantially scale up programmatic multimodal data",
+   "to": "SVG, 3D assets, Webpage, Game, and CAD schematics",
+   "note": "视觉预训练大量加入『代码加渲染结果』的程序化数据，格式覆盖 SVG、3D 资产、网页、游戏和 CAD 示意图。",
+   "infer": "代码能确定性地生成画面，所以图文配对天然准确。这条思路可以借给 UE、Maya 的场景数据：脚本和渲染结果成对保存。"
+  },
+  {
+   "id": "n09",
+   "page": 12,
+   "cat": "data",
+   "from": "we synthesize additional long-context data by carefully permuting and concatenating",
+   "to": "scattered across the full 1M-token context",
+   "note": "长文档天然稀缺，所以合成：把多模态文档和子任务打乱拼接，让任务只有读到散落在整个 1M 上下文里的信息才答得出。作者的判断是长度本身不等于长程能力。"
+  },
+  {
+   "id": "n10",
+   "page": 12,
+   "cat": "data",
+   "key": true,
+   "from": "Our post-training pipeline follows a three-stage paradigm",
+   "to": "Multi-Teacher On-Policy Distillation (MOPD)",
+   "note": "后训练三段：SFT 冷启动，按领域和档位分别做 RL 得到专家，最后用 MOPD 合并成一个模型。SFT 是拿示范数据让模型照着学，目的是给后面的 RL 一个能用的起点。RL 里被训练的那个模型叫 policy，它在环境里行动，环境给 reward（奖励）。"
+  },
+  {
+   "id": "n11",
+   "page": 12,
+   "cat": "data",
+   "from": "we synthesize data trajectories using domain-specialized models from the prior Kimi series",
+   "to": "human-in-the-loop annotation",
+   "note": "SFT 数据来自上一代各领域专精模型合成的轨迹，经过多阶段验证和人工参与标注，再用 XTML 模板统一序列化。论文只说『large-scale』，没有给数据量。"
+  },
+  {
+   "id": "n12",
+   "page": 12,
+   "cat": "task",
+   "from": "general tasks, spanning general experience, vision, reasoning, faithfulness",
+   "to": "coding agents, spanning software engineering",
+   "note": "三个 RL 领域：通用（体验、视觉、推理、忠实度、搜索、知识工作）、通用 agent（长程助手、deep research、段落级写作）、coding agent（SWE、coding 体验、kernel、web 开发）。每个领域内部是许多子任务混在一起训，不是一个任务一个模型。"
+  },
+  {
+   "id": "n13",
+   "page": 12,
+   "cat": "data",
+   "key": true,
+   "from": "Crossing these three domain experts with three reasoning effort levels",
+   "to": "yields a total of nine expert models",
+   "note": "三个领域乘三个档位（low、high、max）共 9 个专家模型，每个单独做 RL，最后才合并。",
+   "infer": "论文没有解释为什么不直接混训。常见的原因是各领域奖励类型和轨迹长度差异很大，混在一起容易互相拖累，这里是推测。"
+  },
+  {
+   "id": "n14",
+   "page": 13,
+   "cat": "result",
+   "from": "By scaling RL FLOPs, tool-call steps scale up consistently",
+   "to": "improvement in the model's overall capability",
+   "note": "图 8 的主张：RL 算力增加时，各类评测分数上升，同时平均 tool-call 步数也上升。说明 RL 让模型学会了做更多步、收集更多观察，而不只是分数变高。"
+  },
+  {
+   "id": "n15",
+   "page": 13,
+   "cat": "data",
+   "from": "Rather than waiting for all rollouts to terminate, the generation phase pauses",
+   "to": "without execution stragglers",
+   "note": "rollout 指模型在环境里完整跑一遍任务得到的轨迹。长程任务里少数轨迹特别慢，会拖住整批更新。做法是完成比例达到 λ 就先开始更新，没跑完的暂停，下一轮接着跑，靠沙箱保存状态。代价是一条轨迹横跨几个迭代，数据会变旧。"
+  },
+  {
+   "id": "n16",
+   "page": 13,
+   "cat": "verifier",
+   "from": "Our policy optimization algorithm inherently tolerates such an extreme off-policy regime",
+   "to": "per-token regularization",
+   "note": "数据变旧（生成它的模型已不是当前模型）会让训练不稳。论文说靠 per-token 正则把更新限制在附近的邻域内来容忍。具体的正则形式这里没写，指向 Kimi K2.5 的算法。"
+  },
+  {
+   "id": "n17",
+   "page": 13,
+   "cat": "verifier",
+   "key": true,
+   "from": "To fine-tune reasoning effort while maximizing token efficiency",
+   "to": "per-problem budget control mechanism during RL",
+   "note": "**reasoning effort 的训练方式是改奖励。** 每道题用冷启动模型估一个初始 token 预算，轨迹超过预算乘系数 τ，任务奖励直接改成 −1。通用任务数思考 token，agent 任务数累计输出 token，含推理和工具调用参数。",
+   "infer": "这是把『不许想太久』写进奖励的硬约束，不是靠 prompt 提示。"
+  },
+  {
+   "id": "n18",
+   "page": 13,
+   "cat": "data",
+   "from": "We first train a max-budget variant with a relatively large",
+   "to": "to suppress excessive overthinking",
+   "note": "τ 是分阶段调的：先训 max 档（τ 较大，仍设上限防过度思考），再逐步减小 τ 得到 high 和 low 档。τ 的调整由人按领域在环里配置。各档位专家的轨迹汇总后用于 SFT 和 MOPD。"
+  },
+  {
+   "id": "n19",
+   "page": 13,
+   "cat": "verifier",
+   "key": true,
+   "from": "For non-verifiable general tasks, we adopt an Agentic Generative Reward Model",
+   "to": "scores in a scorepad",
+   "note": "没有标准答案的通用任务，用 agentic GRM 当裁判（reward model 就是给输出打分的模型）。形式是组内锦标赛式的两两二元比较。评委必须按协议走：读产出，生成 rubric，按 rubric 给每个候选打分，记在 scorepad 里。"
+  },
+  {
+   "id": "n20",
+   "page": 13,
+   "cat": "verifier",
+   "from": "To mitigate reward hacking toward increasingly verbose outputs",
+   "to": "automatically loses the binary comparison",
+   "note": "防啰嗦作弊：评委容易偏爱更长的答案，模型就学着写长。做法是用冷启动模型估一个基准长度 ℓ0，输出超过 σ·ℓ0 的候选在比较中自动判负。"
+  },
+  {
+   "id": "n21",
+   "page": 13,
+   "cat": "data",
+   "from": "We adopt Multi-Teacher On-Policy Distillation (MOPD) to consolidate",
+   "to": "into a unified model",
+   "note": "合并专家用 MOPD：训练时按『领域 d、档位 e』挑出对应的专家当老师，学生是同一个模型，输入里带档位信息。学生自己先生成回答，老师再对每个 token 打分。"
+  },
+  {
+   "id": "n22",
+   "page": 14,
+   "cat": "verifier",
+   "key": true,
+   "from": "clipping threshold to constrain extreme advantage signals",
+   "to": "stabilizing RL training",
+   "note": "**蒸馏奖励是逐 token 的**：老师和学生在该 token 上概率比的对数，裁剪到 ±Rmax。可以看作学生在每个位置偏离老师多远，与 KL（衡量两个概率分布差距的量）同类。每个 token 都有信号，比只在结尾给一个 0/1 奖励密得多。advantage 指某步比平均水平好多少，裁剪是防止极端值把它带偏。"
+  },
+  {
+   "id": "n23",
+   "page": 14,
+   "cat": "result",
+   "from": "we also experimented with more fine-grained top-k distillation objectives",
+   "to": "final performance in our setting",
+   "note": "试过更细的 top-k 蒸馏目标，收敛速度和最终效果都没有更好，所以保留了简单的逐 token 版本。这是一条负面结果，论文没有给数字。"
+  },
+  {
+   "id": "n24",
+   "page": 14,
+   "cat": "data",
+   "from": "During RL, rollout and training share the same quantization scheme",
+   "note": "后训练全程带量化感知训练：MoE 专家权重用 MXFP4，激活用 MXFP8。RL 里 rollout 和训练使用同一种量化，消除训练与推理之间的数值不一致。这属于训练稳定性的一部分。"
+  },
+  {
+   "id": "n25",
+   "page": 14,
+   "cat": "task",
+   "key": true,
+   "from": "Training with a single fixed agent harness can cause a model to overfit",
+   "to": "interaction protocol",
+   "note": "**白盒 RL 环境**：把 agent harness（模型外面那层工具、prompt、上下文管理的壳）拆成可配置的模块，训练时给不同任务组随机组合，可以模拟 Kimi Code、Claude Code、Codex 等。目的是不让模型记住某一家的工具 schema 和交互习惯。",
+   "infer": "这是防『过拟合某个 harness』的数据层办法，和防过拟合 bench 同类。对我们意味着采集的操作轨迹别绑死一种接口。"
+  },
+  {
+   "id": "n26",
+   "page": 15,
+   "cat": "task",
+   "from": "we build a self-evolving, hierarchically organized knowledge graph that agents continuously expand",
+   "to": "knowledge-intensive and coding domains",
+   "note": "任务从知识图谱出发。agent 上网搜索，递归地把粗概念拆成细概念，加到有向无环图里，并复用已有节点去重。图的作用是控制任务的粒度和覆盖面，让冷门知识也能被抽到。"
+  },
+  {
+   "id": "n27",
+   "page": 15,
+   "cat": "data",
+   "key": true,
+   "from": "Keywords derived from the sampled nodes are combined with contextual information",
+   "to": "synthesis agent produces training tasks of various task types",
+   "note": "**任务合成流程**：按目标分布在图上采样节点，节点关键词加祖先节点的上下文拼成查询，从网上取回真实材料，再由合成 agent 为每个实例选一种任务类型（coding、知识、视觉等）出题。任务建立在真实材料上，不是模型凭空编。论文没有给合成量和过滤率。"
+  },
+  {
+   "id": "n28",
+   "page": 16,
+   "cat": "task",
+   "from": "the real day-to-day work of professionals, such as investment banking, data analysis, and legal",
+   "to": "dozens to hundreds of steps",
+   "note": "可验证环境有三类：多步搜索（最后给出可核对的答案）、专业工作（沙箱里操作领域工具，几十到几百步交付成果）、STEM 与图表的视觉推理。第二类的成果怎么判分，这一段没写。"
+  },
+  {
+   "id": "n29",
+   "page": 16,
+   "cat": "task",
+   "from": "Each visual-reasoning trajectory is generated in an agent environment equipped with",
+   "to": "isolated sandbox",
+   "note": "视觉推理环境里模型有一个 Python 沙箱，反复写代码去裁剪、放大、变换图片，做精确计算，并把执行结果（含生成的图）作为新观察。作者称模型做的图像操作越多，复杂视觉题的表现越好。"
+  },
+  {
+   "id": "n30",
+   "page": 16,
+   "cat": "verifier",
+   "key": true,
+   "from": "solutions exceeding a predefined numerical error threshold receive zero reward",
+   "to": "approaching the hardware roofline increases the reward toward 1",
+   "note": "**kernel 任务的奖励是『门槛加连续分』**：每题有 PyTorch 参考实现，数值误差超阈值直接零分；通过后和专家实现比速度，持平得 0.5，越接近硬件理论上限越接近 1。任务取自 Flash Linear Attention 等高质量 GitHub 仓库。"
+  },
+  {
+   "id": "n31",
+   "page": 16,
+   "cat": "verifier",
+   "from": "we develop a hacking-detection system that penalizes reward-hacking strategies",
+   "to": "CUDA graph replay, input caching, and precision reduction",
+   "note": "kernel 任务的作弊检测：重放 CUDA graph、缓存输入、降低精度都会被惩罚，并且随着训练中发现新的作弊手法持续加规则。说明 reward hacking 是在训练过程中实际观察到的，防护是追加式的。"
+  },
+  {
+   "id": "n32",
+   "page": 16,
+   "cat": "task",
+   "from": "we develop realistic mock implementations of widely used applications",
+   "to": "deterministic rules or LLM-based evaluators",
+   "note": "个人助手环境自建 Gmail、Notion、Slack、Canvas 的仿真应用，保留核心语义，但没有外部 API 和限流。任务跨多个模拟日，有几十个相互依赖的事件，一条 rollout 可达上千次工具调用。每个事件各有判据，由确定性规则或 LLM 评估器判。初始工作区由 agent 上网找材料搭出来。",
+   "infer": "这是给 CUA 造『可重置、可大规模并行的假应用』的参照。我们的专业软件没法仿真时，只能靠真实应用加快照。"
+  },
+  {
+   "id": "n33",
+   "page": 16,
+   "cat": "task",
+   "from": "Each task specifies an initial state, a constrained goal, a tool-based action space",
+   "to": "an independent verifier",
+   "note": "Autonomous Execution Tasks（AET）的任务定义：初始状态、受约束的目标、工具动作空间、执行预算、独立 verifier（verifier 就是判对错的程序或模型）。agent 只看到目标、上下文、约束和验证接口，没有参考轨迹，也没有预设流程。"
+  },
+  {
+   "id": "n34",
+   "page": 16,
+   "cat": "verifier",
+   "key": true,
+   "from": "Rewards are grounded in the verifier's evaluation of the final environment state",
+   "to": "agent's self-reported completion",
+   "note": "**奖励只看终态**：由 verifier 评估最终环境状态，不信 agent 自己说『做完了』。agent 反复提交方案、收到 verifier 反馈、再修正。和 Terminal-Bench 的『只查终态』是同一原则。"
+  },
+  {
+   "id": "n35",
+   "page": 16,
+   "cat": "verifier",
+   "key": true,
+   "from": "Reward hacking is mitigated by isolating agents from verifiers",
+   "to": "under limited submission budgets",
+   "note": "**AET 的防作弊三招**：agent 与 verifier 隔离；公开 verifier 只给诊断反馈，另有隐藏 verifier 在留出场景上评分；提交次数有限，超出要扣分。第二招等于把训练里就分出了开发集和测试集。"
+  },
+  {
+   "id": "n36",
+   "page": 16,
+   "cat": "verifier",
+   "from": "Rewards consist of two components: deterministic checks and model judging by an internal reward model",
+   "to": "fakes rather than implements the artifact",
+   "note": "web 开发任务的奖励分两部分：确定性检查（功能测试，复刻任务还比结构和像素相似度）加内部 reward model 评审（读源码，或看并操作产物）。工程构建失败、运行报错、或者造假而非真正实现时，奖励置零。任务由专家整理，且用不同 scaffold 滚动，不绑单一 harness。"
+  },
+  {
+   "id": "n37",
+   "page": 17,
+   "cat": "result",
+   "from": "a black-box system replication task in which the agent reconstructs",
+   "to": "through oracle queries",
+   "note": "图 10 是 AET 的一个例子：黑盒系统复刻，agent 通过向隐藏系统发查询（oracle queries）还原一个 3D 相机维修管理系统。图里 Kimi K3 完成度 1.000，Opus 4.8 为 0.918，GPT-5.5 为 0.893，K2.6 为 0.560。只有这一个任务的曲线，不能当作 AET 整体结果。"
+  },
+  {
+   "id": "n38",
+   "page": 22,
+   "cat": "verifier",
+   "key": true,
+   "from": "tend to explore more aggressively and may even attempt reward hacking",
+   "to": "unintended agent operations",
+   "note": "**沙箱要防的是模型本身**：任务越难，agent 越会激进探索，甚至尝试 reward hacking。他们在容器沙箱里遇到过内核崩溃和死锁，所以改用 Firecracker 微 VM 的 AgentENV，既隔离得更彻底，又允许 agent 挂载磁盘、跑容器甚至起虚拟机。"
+  },
+  {
+   "id": "n39",
+   "page": 22,
+   "cat": "task",
+   "from": "fork creates a new sandbox from the exact state of the original one",
+   "to": "reward judging without side effects",
+   "note": "AgentENV 的 fork 操作：从原沙箱的当前状态复制出一个新沙箱，原来的继续跑。用途之一是打分时在副本上跑，避免打分动作污染环境。另有暂停恢复（等模型推理时不占资源）和定期快照。全程创建了 51,219,741 个沙箱。"
+  },
+  {
+   "id": "n40",
+   "page": 26,
+   "cat": "limit",
+   "from": "The results of Claude Fable 5 include fallback behaviors",
+   "to": "potential cyberguards",
+   "note": "对比时闭源模型的结果带『fallback』和『cyberguards』：Fable 5 的分数含回退行为，GPT-5.6 Sol 可能被安全护栏影响。作者把这些写在基线说明里，读表时这些数字不是同口径的纯能力。"
+  },
+  {
+   "id": "n41",
+   "page": 26,
+   "cat": "result",
+   "from": "On Terminal-Bench 2.1, we report the best score across",
+   "to": "harnesses for all models",
+   "note": "Terminal-Bench 2.1 报的是各模型在 Kimi Code、Claude Code、Codex 三种 harness 里的最好成绩。好处是不偏袒某个 harness；代价是这个数不能直接说明某一 harness 下的表现。"
+  },
+  {
+   "id": "n42",
+   "page": 26,
+   "cat": "limit",
+   "from": "Our SWE-Marathon evaluation is based on an H20-calibrated branch of the official tasks",
+   "to": "correctness and anti-cheat validators unchanged",
+   "note": "SWE-Marathon 用的是为 H20 重新校准的分支：Docker 镜像、性能门槛和 GPU 任务的参考 oracle 都按 H20 改过，但正确性和防作弊 validator 没动。与官方设置不同，和别家数字的可比性有限。"
+  },
+  {
+   "id": "n43",
+   "page": 26,
+   "cat": "limit",
+   "from": "However, a gap remains on research-level tasks",
+   "to": "trails Claude Fable 5 and GPT-5.6 Sol both with and without tools",
+   "note": "作者承认的短板：研究级任务有差距。HLE-Full 无工具 43.5%、有工具 56.0%，都落后于 Fable 5 和 GPT-5.6 Sol；CritPt 为 23.4%。作者把研究级推理列为主要改进方向。"
+  },
+  {
+   "id": "n44",
+   "page": 28,
+   "cat": "data",
+   "from": "These benchmarks are refreshed and expanded frequently, so that they can closely track",
+   "to": "directly guide data and training iterations",
+   "note": "**内部 bench 是为迭代训练服务的**：补公开评测覆盖不到的能力，频繁更新，目的是跟着模型最新的失败模式走，直接指导数据和训练迭代。分三类：coding、通用 agent 体验、对话体验。代价是外界无法复现这些数字。"
+  },
+  {
+   "id": "n45",
+   "page": 29,
+   "cat": "result",
+   "from": "The comparison is performed under blind expert judging",
+   "to": "visual fidelity, and interaction experience",
+   "note": "Kimi Webdev Bench 对 Opus 4.8 的对比用盲评：专家按代码质量、功能完整度、视觉还原度、交互体验打分，不知道输出来自哪个模型。整体胜 58.6%、平 13.8%、负 27.6%，3D/WebGL/Shader 一类胜 72.7%。这类视觉产物最终还是靠人判。"
+  },
+  {
+   "id": "n46",
+   "page": 30,
+   "cat": "limit",
+   "from": "Kimi K3 trails the leaders mainly on Agent Behavior Bench, MIRA Bench",
+   "to": "Agentic Vision Bench, and KWV Bench",
+   "note": "内部评测里作者承认落后的项：Agent Behavior Bench、MIRA Bench、24/7 ClawBench 2.0、Agentic Vision Bench、KWV Bench。Agent Behavior Bench 评的是过程质量（工具使用、效率、规范），不只看结果对不对，这一项落后值得注意。"
+  },
+  {
+   "id": "n47",
+   "page": 30,
+   "cat": "limit",
+   "from": "Frontier models from Anthropic and OpenAI refuse",
+   "to": "comparable evaluation infeasible",
+   "note": "网络安全评测里，Anthropic 和 OpenAI 的模型会拒答，所以无法比较，基线只有 GLM-5.2。36 题漏洞利用套件人工估计要约 540 专家小时。因为没有闭源对照，这部分的相对水平只能参考第三方机构的评估。"
+  },
+  {
+   "id": "n48",
+   "page": 31,
+   "cat": "limit",
+   "from": "Trajectory analysis attributes this gap to four recurring failure modes",
+   "to": "insufficient verification of the final deliverable before submission",
+   "note": "作者对未解出的漏洞利用任务做轨迹分析，归出四类失败：利用链最后一步做不完、对缓解措施选错策略、陷入无效调试循环、提交前验证不足。最后一类是 agent 通用的毛病，与『自己验证自己』有关。"
+  },
+  {
+   "id": "n49",
+   "page": 33,
+   "cat": "result",
+   "from": "Each model works independently in an identically configured sandbox",
+   "to": "profiling, rewriting, and benchmarking",
+   "note": "GPU kernel 案例：各模型在同样配置的沙箱里独立工作，每题最多 24 小时。K3 把 AttnRes 延迟从 283.6 ms 降到 114.4 ms。作者还说开发后期一个早期 K3 checkpoint 已经承担了大部分内部 kernel 优化工作。这是 kernel RL 环境的直接下游用途。"
+  },
+  {
+   "id": "n50",
+   "page": 47,
+   "cat": "task",
+   "from": "Instead of modifying the generation prefix or exposing a token budget",
+   "to": "acts as a generation-constraint instruction",
+   "note": "推理时 reasoning effort 的接口：不是改 prefix，也不暴露 token 预算，而是在上下文里放一条自然语言的 thinking-effort 消息，声明档位。预训练模型本来就会听指令，所以新选项几乎不需要额外训练。模型 schema 预留了 low、medium、high、max 四档，K3 只支持其中一部分。"
+  }
+ ],
+ "sections": [
+  {
+   "id": "s01",
+   "page": 1,
+   "title": "摘要",
+   "from": "We introduce Kimi K3, a 2.8T parameter Mixture-of-Experts model",
+   "summary": "总体介绍：2.8T 参数、104B 激活、1M 上下文，后训练是三个领域加多个 reasoning effort 档位的 RL。摘要里就写了总体仍落后两个闭源模型。"
+  },
+  {
+   "id": "s02",
+   "page": 2,
+   "title": "§1 Introduction",
+   "from": "scaling meant investing more computation before deployment by training",
+   "summary": "把『预训练规模』和『测试时算力』说成两条扩展轴，并列出 K3 的环境类别和蒸馏合并的做法。**第二段列出全部 RL 环境，值得读。**"
+  },
+  {
+   "id": "s03",
+   "page": 3,
+   "title": "§2 Model Architecture",
+   "from": "The Kimi K3 architecture is designed to scale information flow",
+   "summary": "架构总览：沿序列、深度、宽度三个方向各有一项改动。可跳过。"
+  },
+  {
+   "id": "s04",
+   "page": 4,
+   "title": "§2.1 Hybrid Attention",
+   "from": "Kimi K3 uses a layerwise hybrid of linear and global attention",
+   "summary": "KDA 线性注意力和 Gated MLA 以 3:1 交替，含数值范围受限的衰减设计。可跳过。"
+  },
+  {
+   "id": "s05",
+   "page": 6,
+   "title": "§2.2 Attention Residuals",
+   "from": "compress all prior information into a single state hl over depth",
+   "summary": "让每层按权重取前面各层输出的残差替代方案，并给出分块版本。可跳过。"
+  },
+  {
+   "id": "s06",
+   "page": 6,
+   "title": "§2.3 Stable LatentMoE",
+   "from": "Increasing both the expert pool and the number of active experts expands",
+   "summary": "MoE 的三项稳定性改动：加归一化的 LatentMoE、有界的 SiTU-GLU 激活、Quantile Balancing 负载均衡。可跳过，想看训练稳定性做法可看 QB 一段。"
+  },
+  {
+   "id": "s07",
+   "page": 9,
+   "title": "§2.4 Native Vision",
+   "from": "Kimi K3 is natively multimodal: text, images, and videos are processed by a single shared backbone",
+   "summary": "视觉编码器 MoonViT-V2 从零训练，原因是用 SigLIP 初始化时梯度范数偏高且常有尖峰。可跳过。"
+  },
+  {
+   "id": "s08",
+   "page": 10,
+   "title": "§3 Pre-Training",
+   "from": "Kimi K3 is pre-trained on a curated corpus spanning four",
+   "summary": "预训练数据、scaling law 和训练设置。程序化多模态数据（代码配渲染图）一段值得扫一眼，其余可跳过。"
+  },
+  {
+   "id": "s09",
+   "page": 12,
+   "title": "§3.4 Long-Context Extension",
+   "from": "Long documents and videos from natural sources contain a substantial amount",
+   "summary": "长上下文数据的清洗和合成，以及 8K 到 1M 的四阶段延长。合成长程任务的思路可以看，其余可跳过。"
+  },
+  {
+   "id": "s10",
+   "page": 12,
+   "title": "§4.1.1 Supervised Fine-Tuning",
+   "from": "The SFT stage establishes a high-quality cold-start policy",
+   "summary": "SFT 数据由旧模型合成并经验证和人工标注，作为 RL 的冷启动。很短，没有数据量。"
+  },
+  {
+   "id": "s11",
+   "page": 12,
+   "title": "§4.1.2 Reinforcement Learning",
+   "from": "While SFT provides a solid cold-start foundation, RL is critical",
+   "summary": "**必读。** 三个 RL 领域乘三个 effort 档位共 9 个专家；partial rollout、per-problem 预算的 effort 训练、agentic GRM 与长度防作弊都在这一节。"
+  },
+  {
+   "id": "s12",
+   "page": 13,
+   "title": "§4.1.3 Multi-Teacher On-Policy Distillation",
+   "from": "We adopt Multi-Teacher On-Policy Distillation (MOPD) to consolidate",
+   "summary": "怎么把 9 个专家合并成一个模型：按领域和档位选老师，逐 token 蒸馏奖励。想知道蒸馏奖励怎么算，要读。"
+  },
+  {
+   "id": "s13",
+   "page": 14,
+   "title": "§4.1.4 Deployment-Aware Post-Training",
+   "from": "To reduce memory footprint and serving cost at deployment",
+   "summary": "后训练全程带 MXFP4 量化感知训练，并微调草稿模型做投机解码。偏部署，可跳过。"
+  },
+  {
+   "id": "s14",
+   "page": 14,
+   "title": "§4.2 RL Task Synthesis and Agentic Environments",
+   "from": "The effectiveness of our RL framework relies heavily on rich",
+   "summary": "本章引言，说明 RL 效果取决于丰富且可靠验证的环境。**§4.2 整章是任务和环境构造的核心，必读。**"
+  },
+  {
+   "id": "s15",
+   "page": 14,
+   "title": "§4.2.1 Unified White-Box RL Environment",
+   "from": "Training with a single fixed agent harness can cause a model",
+   "summary": "把 harness 拆成可组合模块，训练时随机搭配，防止过拟合某一家 harness。**必读，很短。**"
+  },
+  {
+   "id": "s16",
+   "page": 15,
+   "title": "§4.2.2 Knowledge-Graph-Guided Task Synthesis",
+   "from": "The quality and diversity of post-training tasks are largely determined",
+   "summary": "用 agent 扩展的知识图谱控制覆盖面，再检索真实网页材料合成任务。**任务从哪来，必读。**"
+  },
+  {
+   "id": "s17",
+   "page": 15,
+   "title": "§4.2.3 Verifiable Problems in Agentic Environments",
+   "from": "We train Kimi K3 on verifiable problems in agentic environments",
+   "summary": "三类可验证环境：多步搜索、专业工作、带 Python 沙箱的视觉推理。只有概述，没有奖励细节。"
+  },
+  {
+   "id": "s18",
+   "page": 16,
+   "title": "§4.2.4 Kernel Optimization Tasks",
+   "from": "To strengthen Kimi K3's GPU kernel optimization capabilities",
+   "summary": "kernel 任务的奖励：数值错误零分、性能按专家实现分段给分，另有持续扩充的作弊检测。**奖励设计最具体的一节，必读。**"
+  },
+  {
+   "id": "s19",
+   "page": 16,
+   "title": "§4.2.5 Personal Assistant Tasks",
+   "from": "For long-horizon personal assistant tasks, we develop realistic mock",
+   "summary": "仿真 Gmail、Notion、Slack、Canvas，多日事件流，每个事件各有判据。可参考怎么造可重置的假应用。"
+  },
+  {
+   "id": "s20",
+   "page": 16,
+   "title": "§4.2.6 Autonomous Execution Tasks",
+   "from": "We introduce Autonomous Execution Tasks (AET), an environment paradigm",
+   "summary": "独立 verifier、终态奖励、公开加隐藏 verifier、提交预算。**verifier 设计和防作弊，必读。**"
+  },
+  {
+   "id": "s21",
+   "page": 16,
+   "title": "§4.2.7 Web Development Tasks",
+   "from": "We construct a diverse suite of expert-curated web development tasks",
+   "summary": "web 开发任务的奖励是确定性检查加模型评审，构建失败或造假置零。视觉产物怎么打分可参考。"
+  },
+  {
+   "id": "s22",
+   "page": 17,
+   "title": "§5 Infrastructure",
+   "from": "Kimi K3 combines three system challenges rarely encountered in a single model",
+   "summary": "基础设施总览：KDA 内核、3T 预训练、百万 token agentic RL。可跳过。"
+  },
+  {
+   "id": "s23",
+   "page": 17,
+   "title": "§5.1 Algorithm-System Co-Design for KDA",
+   "from": "KDA replaces the growing key",
+   "summary": "KDA 的融合内核和上下文并行，纯系统实现。可跳过。"
+  },
+  {
+   "id": "s24",
+   "page": 18,
+   "title": "§5.2 Infra for 3T-class Pre-Training",
+   "from": "Kimi K3 pre-training combines Pipeline Parallelism (PP) with virtual stages",
+   "summary": "专家并行、显存优化、多模态编码器调度。可跳过。"
+  },
+  {
+   "id": "s25",
+   "page": 21,
+   "title": "§5.3 Infra for 1M Agentic RL",
+   "from": "Scaling agentic RL for a model as large as Kimi K3",
+   "summary": "百万 token RL 的资源安排：co-located 训练、外部 KV 缓存、自动限流。想了解长轨迹 RL 的工程代价可以扫一眼。"
+  },
+  {
+   "id": "s26",
+   "page": 22,
+   "title": "§5.3.2 Sandbox Infrastructure",
+   "from": "We employ multiple sandbox runtimes to support the diverse requirements",
+   "summary": "AgentENV 微 VM 沙箱：为什么容器不够，pause、fork、snapshot 怎么用，规模数字。**必读。**"
+  },
+  {
+   "id": "s27",
+   "page": 22,
+   "title": "§5.4 Inference and Online Serving",
+   "from": "Serving Kimi K3 exposes the same challenges from the production side",
+   "summary": "前缀缓存、内核和集群调度。可跳过。"
+  },
+  {
+   "id": "s28",
+   "page": 25,
+   "title": "§6.1.1 Benchmarks",
+   "from": "We evaluate Kimi K3 on a comprehensive benchmark suite organized along",
+   "summary": "列出推理、coding、agentic、视觉四类共几十个 bench。当作近期主流 bench 名单扫一遍。"
+  },
+  {
+   "id": "s29",
+   "page": 26,
+   "title": "§6.1.2 – 6.1.3 Baselines and Evaluation Configurations",
+   "from": "We benchmark against state-of-the-art proprietary and open-source models",
+   "summary": "对比对象和各 bench 的运行设置：harness、子集、硬件、第三方引用。**怎么读这些分数必须看这里，它有许多口径差异。**"
+  },
+  {
+   "id": "s30",
+   "page": 26,
+   "title": "§6.1.4 Results",
+   "from": "Table 2 provides a comprehensive comparison of Kimi K3 against",
+   "summary": "主结果表和文字解读。结论是紧追两个闭源模型，研究级推理和部分 agent 评测有差距。"
+  },
+  {
+   "id": "s31",
+   "page": 28,
+   "title": "§6.2.1 Capability Evaluation",
+   "from": "Beyond the public benchmark suite, we maintain a collection of in-house",
+   "summary": "内部 bench 的清单和说明，设计目的是跟踪模型最新失败模式。表 3 和表 4 看结论即可。"
+  },
+  {
+   "id": "s32",
+   "page": 30,
+   "title": "§6.2.2 Cyber Security Evaluation",
+   "from": "We evaluate the model's cybersecurity capability along a two-tier progression",
+   "summary": "漏洞发现和漏洞利用两档评测，以及四类失败原因。和训练方法关系不大，看失败模式即可。"
+  },
+  {
+   "id": "s33",
+   "page": 31,
+   "title": "§6.3 Third-Party Evaluation",
+   "from": "Kimi K3 has also been independently evaluated by third-party organizations",
+   "summary": "Artificial Analysis、Vals AI、Arena 的排名。可跳过。"
+  },
+  {
+   "id": "s34",
+   "page": 31,
+   "title": "§6.4 Cost Efficiency",
+   "from": "Beyond scores, we examine inference cost efficiency by comparing score",
+   "summary": "按每题成本比较分数。可跳过。"
+  },
+  {
+   "id": "s35",
+   "page": 33,
+   "title": "§7 Case Studies",
+   "from": "In this section, we present representative cases that demonstrate",
+   "summary": "kernel 优化、编译器、芯片设计、科研和视频剪辑案例。都是展示性质，没有对照实验。"
+  },
+  {
+   "id": "s36",
+   "page": 34,
+   "title": "§8 Conclusion",
+   "from": "We present Kimi K3, an open 2.8-trillion-parameter Mixture-of-Experts model",
+   "summary": "结论只有一段，重复主要结果。可跳过。"
+  },
+  {
+   "id": "s37",
+   "page": 43,
+   "title": "附录 B–E 数学细节",
+   "from": "The design goal of SiTU-GLU",
+   "summary": "SiTU-GLU、Quantile Balancing、直方图估计和 MoonEP 的推导。可跳过。"
+  },
+  {
+   "id": "s38",
+   "page": 46,
+   "title": "附录 F Chat Template",
+   "from": "The Kimi K3 chat template is redesigned around three goals",
+   "summary": "XTML 模板和 reasoning effort 的自然语言接口。**effort 怎么传给模型看这里。**"
+  }
+ ],
+ "ver": "v2"
+}

@@ -1,0 +1,588 @@
+{
+ "id": "swe-bench-pro",
+ "title": "SWE-Bench Pro",
+ "full": "SWE-Bench Pro: Can AI Agents Solve Long-Horizon Software Engineering Tasks?",
+ "arxiv": "2509.16941",
+ "pdf": "papers/2509.16941.pdf",
+ "meta": "Scale AI · 2025-09（v2 2025-11）· 正文 10 页 + 附录",
+ "question": "怎么防污染和过拟合：私有集、留出集、从真实仓库取题？",
+ "tldr": [
+  "**防污染靠选题来源，不靠事后检测**：公开集和留出集只用 GPL 等强 copyleft 许可证的仓库，商业集直接向创业公司买私有代码库。论文只做了这个选择，没有报告任何污染检测实验。",
+  "**三集分工**：公开集 731 题，题和结果都公开；商业集 276 题，题不公开、只报成绩；留出集 858 题，完全私有，留着以后检查模型是否对公开集过拟合。留出集目前没有任何成绩。",
+  "**题目是真实 commit 加人工补全**：用相邻两个 commit 取出 gold patch 和测试，再由人重写问题描述、补写 requirements 和 interface，目的是让原有单元测试不再冤杀合理的不同解法。",
+  "**verifier 仍是原仓库的单元测试**：fail-to-pass 测试判是否修好，pass-to-pass 测试判是否改坏。环境由工程师手工搭 Docker，gold patch 跑多次排除 flaky 测试，再人工删掉无关或过宽的测试。",
+  "**比 SWE-Bench Verified 难很多**：改动平均 107.4 行、4.1 个文件，每题至少 10 行，头部模型公开集 Pass@1 低于 45%，商业集低于 20%。",
+  "**承认的短板**：语言覆盖偏窄、单元测试挡不住所有合理解、要靠人工写 requirements 才能让测试公平。去掉人工补全后 GPT-5 从 25.9% 掉到 8.40%。"
+ ],
+ "forUs": [
+  "三集结构可以直接照搬：公开集用来发论文和对外比较，留出集只在换了训练配方后偶尔跑一次看过拟合，商业集换成合作方的真实工程。关键是留出集从第一天起就不参与任何调参。",
+  "「需求补全」是这篇对我们最有用的做法。UE、Maya 的任务描述天然比 issue 更含糊，终态检查又很窄，所以必须像它一样把「测试会查什么」逐条写进任务说明，不能指望模型猜。",
+  "verifier 要在上线前做两件事：把参考解跑多次确认稳定，再逐条人工看每个检查项是否和任务相关、是否过宽。3D 里渲染和物理有非确定性，flaky 检查比代码任务多得多，这一步更不能省。",
+  "它的防污染只靠许可证和私有来源。我们的素材（采集轨迹、合作方工程）天然是私有的，这一点比它更有利，但同样要避免私有资产进入任何公开训练语料。",
+  "论文没有讲 RL 训练怎么用这些题，只在相关工作里提到同一批作者用这类实例做过 RL。要把它当训练环境，需要自己处理题量（一仓库最多 100 题）和 verifier 抗作弊。"
+ ],
+ "readFirst": [
+  {
+   "label": "摘要与引言的三集划分",
+   "why": "一页讲清公开、留出、商业三集各自的来源和公开方式",
+   "note": "n03"
+  },
+  {
+   "label": "§4.2–4.3 任务描述和环境",
+   "why": "人工补全 requirements 和三步验证环境，是造题流程的核心",
+   "note": "n31"
+  },
+  {
+   "label": "§3.2 Requirements 与 Interface",
+   "why": "为什么原仓库测试直接当 verifier 会冤杀正确解，以及怎么补",
+   "note": "n17"
+  },
+  {
+   "label": "§6.2 去掉人工补全的消融",
+   "why": "唯一量化证明补全有用的实验",
+   "note": "n37"
+  },
+  {
+   "label": "§3.3 三集的具体划分",
+   "why": "题数、来源、公开程度",
+   "note": "n24"
+  },
+  {
+   "label": "§7 Limitations",
+   "why": "作者承认的局限，尤其是对单元测试的依赖",
+   "note": "n42"
+  }
+ ],
+ "notes": [
+  {
+   "id": "n01",
+   "page": 1,
+   "cat": "task",
+   "from": "constructing benchmarks from public GitHub repositories is inherently difficult",
+   "note": "作者的出发点：许可证宽松的开源仓库很可能已经在预训练语料里，所以直接从公开 GitHub 取题的 bench 很难说清模型是在解题还是在背题。"
+  },
+  {
+   "id": "n02",
+   "page": 1,
+   "cat": "data",
+   "from": "Verified [10] includes a substantial proportion of relatively trivial problems",
+   "note": "对 SWE-Bench Verified 的第二条批评：题太简单。后面的做法（每题至少 10 行、多文件）都是为了回应这一条。"
+  },
+  {
+   "id": "n03",
+   "page": 1,
+   "cat": "data",
+   "key": true,
+   "from": "The benchmark is partitioned into a public set with open access to problems",
+   "to": "18 proprietary repositories",
+   "note": "**三集划分**：公开集来自 11 个仓库，留出集 12 个仓库，商业集 18 个私有仓库，共 41 个。留出集和商业集的题都不公开，商业集只公布成绩。"
+  },
+  {
+   "id": "n04",
+   "page": 1,
+   "cat": "result",
+   "from": "their performance on SWE-Bench Pro remains below 45%",
+   "note": "统一用 SWE-Agent 脚手架时，头部模型 Pass@1 低于 45%。发布时的最高分在 40% 出头，留出了空间。"
+  },
+  {
+   "id": "n05",
+   "page": 2,
+   "cat": "data",
+   "key": true,
+   "from": "exclusively selecting repositories distributed under strong copyleft licenses",
+   "to": "a held-out set",
+   "note": "**防污染的核心设计**：公开集和留出集只选 GPL 这类强 copyleft 许可证的仓库。作者的理由是法律上的：这类代码不容易被商业模型训练方合法收录。",
+   "infer": "这是对训练方行为的假设，论文没有测过模型是否真的没见过这些仓库。"
+  },
+  {
+   "id": "n06",
+   "page": 2,
+   "cat": "data",
+   "from": "acquiring commercial codebases from real startups",
+   "to": "commercial set",
+   "note": "第二个措施：向创业公司买真实的私有代码库，作为商业集。私有代码不在任何公开语料里，污染风险最低，代价是题不能公开，别人无法复现。"
+  },
+  {
+   "id": "n07",
+   "page": 2,
+   "cat": "data",
+   "from": "The held-out set remains private, preserving it",
+   "to": "future overfitting checks",
+   "note": "留出集的用途写得很明确：以后用来检查模型是否对公开集过拟合。它和公开集结构一致但仓库不同，所以公开集成绩涨而留出集不涨，就说明在针对公开仓库优化。"
+  },
+  {
+   "id": "n08",
+   "page": 2,
+   "cat": "task",
+   "from": "retain only problems requiring substantial, multi-file modifications",
+   "to": "4.1 files",
+   "note": "过滤掉 1 到 10 行的小改动，只留多文件大改动。平均 107.4 行、4.1 个文件。对 Verified 里 161 题只改一两行的批评，用这个门槛直接回应。"
+  },
+  {
+   "id": "n09",
+   "page": 2,
+   "cat": "task",
+   "from": "Each repository contributes between 50 and 100 instances",
+   "to": "overfitting to any single repository",
+   "note": "每个仓库最多 100 题。目的是防止模型靠熟悉某一个仓库拿分，也让总分更能代表泛化。代价是总题量被仓库数量卡住。"
+  },
+  {
+   "id": "n10",
+   "page": 2,
+   "cat": "data",
+   "key": true,
+   "from": "clarifying ambiguity and adding missing context to preserve core technical challenges",
+   "to": "maintaining implementation flexibility",
+   "note": "**人工补全的两个目的**：补缺失信息但不降低难度；把单元测试恢复成可靠的 verifier，办法是限定解空间，避免冤杀合理解，同时不规定具体实现。"
+  },
+  {
+   "id": "n11",
+   "page": 2,
+   "cat": "data",
+   "from": "Da et al. [6] shows that these instances can be used for RL training as",
+   "to": "well as evaluation",
+   "note": "论文唯一一处提到 RL：同一批作者此前的工作说明这类实例既能评测也能做 RL 训练。本篇没有任何训练实验。"
+  },
+  {
+   "id": "n12",
+   "page": 3,
+   "cat": "data",
+   "from": "we contacted the company and purchased their engineering repos",
+   "note": "商业集的来源就是直接联系公司并购买工程仓库。论文没有写价格和每个仓库的授权条款，只说出于法律原因不能公开。"
+  },
+  {
+   "id": "n13",
+   "page": 3,
+   "cat": "task",
+   "from": "we augment each issue with a list of human-written",
+   "to": "self-contained",
+   "note": "每题除了问题描述，还加一份人写的 requirements，目的是让题自包含。这一步是和原版 SWE-bench 最大的区别。"
+  },
+  {
+   "id": "n14",
+   "page": 3,
+   "cat": "limit",
+   "from": "real software engineering tasks can be under-specified",
+   "to": "potentially interesting",
+   "note": "作者承认真实任务本来就含糊，需要先探索。给足 requirements 的设定其实回避了「发现需求」这部分能力，只测实现能力。"
+  },
+  {
+   "id": "n15",
+   "page": 3,
+   "cat": "data",
+   "key": true,
+   "from": "By exclusively using repositories with GPL and other copyleft licenses",
+   "to": "commercial training corpora",
+   "note": "**防污染论证的原文**：copyleft 许可证形成法律障碍，所以不太可能进入商业训练集，加上私有商业仓库。论证是推理，不是测量。",
+   "infer": "GPL 代码在技术上仍可能被爬进语料。这种防护的强度取决于训练方是否遵守许可证。"
+  },
+  {
+   "id": "n16",
+   "page": 3,
+   "cat": "task",
+   "from": "we use content from the original commits, PR and issue, then rewrite it",
+   "to": "in the style of issues",
+   "note": "问题描述的来源是原始 commit、PR 和 issue，再按 issue 的风格重写并补信息。附录说明重写时沿用该仓库自己的 issue 模板，让描述接近真实分布。"
+  },
+  {
+   "id": "n17",
+   "page": 3,
+   "cat": "verifier",
+   "key": true,
+   "from": "These requirements are grounded on the unit tests that are used for validation",
+   "to": "expected for an API",
+   "note": "**requirements 以测试为依据写**：测试会查什么，就把对应的路由名、行为等写进需求。这样模型不需要猜测试的预期。"
+  },
+  {
+   "id": "n18",
+   "page": 3,
+   "cat": "verifier",
+   "key": true,
+   "from": "a common false negative in unit-test verifiers",
+   "to": "than what the unit test is expecting",
+   "note": "**interface 是为防假阴性**：新增功能的测试写死了类名和函数名，模型换个合理的命名就会被判错。所以把测试用到的类、函数名、签名明确写出来。"
+  },
+  {
+   "id": "n19",
+   "page": 4,
+   "cat": "task",
+   "from": "Each task is evaluated in a containerized, language-specific environment",
+   "note": "每题一个容器环境，覆盖 Python、JS/TS、Go，并预构建成 Docker 镜像发布，保证可复现。"
+  },
+  {
+   "id": "n20",
+   "page": 4,
+   "cat": "verifier",
+   "key": true,
+   "from": "fail2pass tests that verify issue resolution and",
+   "to": "functionalities remain intact",
+   "note": "**verifier 就是测试**：fail-to-pass 测试在修复前失败、修复后必须通过，证明问题解决；pass-to-pass 测试修复前后都通过，证明没有改坏别的功能。"
+  },
+  {
+   "id": "n21",
+   "page": 4,
+   "cat": "data",
+   "from": "we manually verified and cleaned the test suite",
+   "to": "pass the test suite",
+   "note": "任务描述的补全和测试清洗是配套做的：描述必须写到能让人通过测试为止。"
+  },
+  {
+   "id": "n22",
+   "page": 4,
+   "cat": "task",
+   "from": "we identify pairs of consecutive commits that together capture the resolution of an issue",
+   "note": "取题方法：在提交历史里找相邻的 commit 对。旧的作 base，新的作 instance，不依赖 issue 页面存在。"
+  },
+  {
+   "id": "n23",
+   "page": 4,
+   "cat": "data",
+   "from": "We release 731 instances openly on HuggingFace",
+   "note": "公开集 731 题，来自带 copyleft 许可证的公开仓库，所有分析都用它做。"
+  },
+  {
+   "id": "n24",
+   "page": 4,
+   "cat": "data",
+   "key": true,
+   "from": "For the commercial set of 276 problems sourced from startup repositories",
+   "to": "cannot release for legal reasons",
+   "note": "**商业集 276 题**，不公开但公布成绩，是唯一含私有创业公司代码的子集。看到别人拿它比较时要知道无法复核。"
+  },
+  {
+   "id": "n25",
+   "page": 4,
+   "cat": "data",
+   "from": "We hold out a set of 858 problems mirroring the public set",
+   "to": "overfitting in the future",
+   "note": "留出集 858 题，是三集里最大的，仓库与公开集不同，现在完全不出成绩。"
+  },
+  {
+   "id": "n26",
+   "page": 5,
+   "cat": "verifier",
+   "from": "We define the test patch as the diff of test related files",
+   "to": "referred to as the gold patch",
+   "note": "gold patch 和 test patch 的定义：两个 commit 的差里，测试相关文件是 test patch，其余是 gold patch（参考解）。测试来自仓库作者本人写的，不是另外编的。"
+  },
+  {
+   "id": "n27",
+   "page": 5,
+   "cat": "data",
+   "from": "commit messages are often unstructured, incomplete, or entirely missing",
+   "note": "真实 commit 信息常常缺失，所以需要人把散落在 issue、PR、commit 里的信息收齐再重写。这是人工成本最大的一块。"
+  },
+  {
+   "id": "n28",
+   "page": 5,
+   "cat": "task",
+   "from": "the requirements specify the expected behavior but does not prescribe",
+   "to": "solution should be implemented",
+   "note": "requirements 只写要什么行为，不写怎么实现。这条边界决定了任务是否仍然保留技术难度。"
+  },
+  {
+   "id": "n29",
+   "page": 5,
+   "cat": "data",
+   "from": "We leveraged professional software engineers to create Docker-based environments",
+   "note": "环境由专业工程师手工搭建，反复修改直到镜像能跑通代码和测试。这是造题里不能自动化的一步，成本论文没给。"
+  },
+  {
+   "id": "n30",
+   "page": 5,
+   "cat": "verifier",
+   "key": true,
+   "from": "we run the gold tests several times and ensure that they pass consistently",
+   "to": "drop any problems that do not pass this criteria",
+   "note": "**防 flaky 的办法**：参考解的测试重复跑几次，不稳定的整题丢弃。次数论文没写。"
+  },
+  {
+   "id": "n31",
+   "page": 5,
+   "cat": "verifier",
+   "key": true,
+   "from": "each tests is checked if it is relevant to the task description",
+   "to": "too broad",
+   "note": "**人工逐条审 fail-to-pass 测试**：和任务无关的、过宽的都删掉；全部都有问题就整题丢。过宽的测试会让不相关的行为也决定对错。"
+  },
+  {
+   "id": "n32",
+   "page": 6,
+   "cat": "result",
+   "from": "we find that Agentless has difficulty in multi-file editing",
+   "to": "produces low evaluation scores",
+   "note": "他们试了 Agentless 脚手架，多文件修改很差，所以全文只用 SWE-Agent。这说明多文件改动本身就是对脚手架的压力测试。"
+  },
+  {
+   "id": "n33",
+   "page": 6,
+   "cat": "result",
+   "from": "Models are evaluated in the setting without any ambiguity",
+   "to": "problem statement, requirements and interface",
+   "note": "所有主结果都给了问题描述、requirements 和 interface。测的是在信息充分时的实现能力，不是澄清需求的能力。"
+  },
+  {
+   "id": "n34",
+   "page": 6,
+   "cat": "data",
+   "from": "For all analysis, we use the public set to avoid potential leakage",
+   "to": "commercial set",
+   "note": "分析一律只用公开集，避免把商业集的信息泄露出去。留出集尚无任何评测。"
+  },
+  {
+   "id": "n35",
+   "page": 6,
+   "cat": "result",
+   "from": "there is also a significant performance gap between the public and commercial set",
+   "to": "less than 20% in the commercial set",
+   "note": "公开集最高 43.6%，商业集最高 17.8%。差距可以解释为私有代码没被见过，也可能是商业仓库本身更难，论文没有区分这两种原因。"
+  },
+  {
+   "id": "n36",
+   "page": 7,
+   "cat": "result",
+   "from": "the performance gap between",
+   "to": "beyond 3 files",
+   "note": "改动文件数越多成绩掉得越厉害，超过 3 个文件后前沿模型和开源模型差距明显拉大。10 个文件以上的样本只有二三十题，方差大。"
+  },
+  {
+   "id": "n37",
+   "page": 8,
+   "cat": "result",
+   "key": true,
+   "from": "Without the requirements and interface, both models tested",
+   "to": "significantly degraded performance",
+   "note": "**消融：不给 requirements 和 interface，成绩大跌**。表 3 里 GPT-5 从 25.9% 掉到 8.40%，Opus 4.1 从 22.7% 掉到 8.20%（50 轮、2 美元上限设定）。"
+  },
+  {
+   "id": "n38",
+   "page": 8,
+   "cat": "verifier",
+   "from": "Since unit tests expect a narrow set of solutions",
+   "to": "resulting in lower pass rates",
+   "note": "对掉分的解释：测试只接受很窄的一类解，模型写出别的合理解就会被判错，也就是假阴性。作者没有直接统计有多少是冤杀。"
+  },
+  {
+   "id": "n39",
+   "page": 8,
+   "cat": "result",
+   "from": "We conduct an LLM-as-a-judge analysis for failure modes",
+   "to": "utilizing GPT-5 as the judge",
+   "note": "失败原因分类用 GPT-5 当 judge，只看每个失败轨迹的最后 20 轮。judge 只用于分析，不参与判题。"
+  },
+  {
+   "id": "n40",
+   "page": 8,
+   "cat": "data",
+   "from": "We determined 20 turns to have the highest correspondence",
+   "to": "10 turns and 40 turns",
+   "note": "看最后几轮是靠和人工判断的对应程度挑出来的，20 轮最好。论文引用前人 87% 的人机一致率，没有报告自己 judge 的一致率。"
+  },
+  {
+   "id": "n41",
+   "page": 9,
+   "cat": "limit",
+   "from": "some widely-used languages like Java, C++, and",
+   "to": "underrepresented",
+   "note": "作者承认语言覆盖不均，Java、C++、Rust 偏少，只有 Python、JS、TS、Go。"
+  },
+  {
+   "id": "n42",
+   "page": 9,
+   "cat": "limit",
+   "key": true,
+   "from": "real software engineering tasks may have a variety of correct solutions",
+   "to": "original tests outlined in the task",
+   "note": "**最重要的局限**：用 fail-to-pass 和 pass-to-pass 当 verifier，有效的不同解法可能过不了原测试。人工补全是缓解办法，不是根治。"
+  },
+  {
+   "id": "n43",
+   "page": 9,
+   "cat": "limit",
+   "from": "Developing evaluation approaches beyond test-based verification, such as rubrics",
+   "note": "未来方向：rubric、代码质量、安全性、可维护性等，说明作者认为测试只覆盖了「能不能跑」这一层。"
+  },
+  {
+   "id": "n44",
+   "page": 9,
+   "cat": "result",
+   "from": "achieving a 23% success rate on SWE-Bench Pro compared to over 70%",
+   "to": "SWE-Bench Verified",
+   "note": "结论里用 23% 对比 Verified 的 70% 以上。23% 对应的是 50 轮、2 美元上限下的 Opus 和 GPT-5，和主表的 41.8% 不是同一设定，引用时要分清。"
+  },
+  {
+   "id": "n45",
+   "page": 13,
+   "cat": "result",
+   "from": "Models are capped at 50 turns and a cost limit of $2",
+   "note": "表 5 的数字来自这个预算限制下的运行，分析和消融都用它。其中经 SWE-bench 类轨迹微调的 SWE-Smith-32B 只有 6.8%，说明在旧分布上微调不能直接迁移到更难的新题。"
+  },
+  {
+   "id": "n46",
+   "page": 14,
+   "cat": "task",
+   "from": "effort is made to keep the problem statements as close as possible to the",
+   "to": "real-world distribution",
+   "note": "重写问题描述时尽量沿用仓库自己的 issue 模板和格式，避免出现和真实 issue 分布不同的「benchmark 腔」。"
+  },
+  {
+   "id": "n47",
+   "page": 15,
+   "cat": "verifier",
+   "from": "if a unit test asserts for the presence of a specific error log string",
+   "to": "exact same error log string",
+   "note": "requirements 里的典型例子：测试断言了某条日志文本，就要求解必须输出完全一致的文本。测试的细节被写成需求，这是把检查项和任务说明对齐的具体做法。"
+  },
+  {
+   "id": "n48",
+   "page": 15,
+   "cat": "task",
+   "from": "Requirements never include specific code implementation and don’t leak solutions",
+   "note": "requirements 不写具体代码、不泄露解。但「具体到函数名和路由」本身就是缩小解空间，这个边界靠审稿人判断，论文没给量化标准。"
+  },
+  {
+   "id": "n49",
+   "page": 15,
+   "cat": "verifier",
+   "from": "Since SWE-Bench Pro uses unit tests without modification",
+   "to": "module path that the unit test is not expecting",
+   "note": "测试代码保持原样，不为迁就模型而改测试。所以 interface 只能加在任务说明一侧。"
+  },
+  {
+   "id": "n50",
+   "page": 20,
+   "cat": "verifier",
+   "from": "Do NOT invent or propose new categories. If none fits, use",
+   "note": "judge prompt 的约束：只能从预设的失败类别里选一个，选不出就归 other。预设类别由人先看一批轨迹后手工定好。"
+  }
+ ],
+ "sections": [
+  {
+   "id": "s01",
+   "page": 1,
+   "title": "摘要",
+   "from": "We introduce SWE-Bench Pro, a substantially more challenging benchmark",
+   "summary": "1865 题、41 个仓库，分公开、留出、商业三集，头部模型 Pass@1 低于 45%。三集的划分在这里就写清了，值得读。"
+  },
+  {
+   "id": "s02",
+   "page": 1,
+   "title": "§1 Introduction",
+   "from": "Large Language Model (LLM) agents have been widely adopted in modern",
+   "summary": "提出现有 bench 的两个问题：容易被污染、题太简单（Verified 里 161/500 题只改一两行）。随后列出三点贡献：防污染的选题方式、更难更多样的题、人工补全加验证流程。**必读**，防污染思路在这里。"
+  },
+  {
+   "id": "s03",
+   "page": 2,
+   "title": "§2 Related Work",
+   "from": "The evaluation of code generation capabilities has evolved from simple function-level tasks",
+   "summary": "回顾 HumanEval、SWE-bench、Multi-SWE-bench 以及 SWE-agent 等脚手架。背景介绍，可跳过。"
+  },
+  {
+   "id": "s04",
+   "page": 3,
+   "title": "§3.1 Characteristics of SWE-Bench Pro",
+   "from": "First, all repositories selected in SWE-Bench Pro are actively maintained",
+   "summary": "说明选仓库的标准、每仓库最多 100 题的限制、人工补全，以及用 copyleft 许可证和购买私有仓库来防污染。**必读**，是设计动机最集中的一节。"
+  },
+  {
+   "id": "s05",
+   "page": 3,
+   "title": "§3.2 Task Specification",
+   "from": "Each task instance in SWE-Bench Pro is complete with human-augmented problem statement",
+   "summary": "任务由问题描述、requirements、interface 三部分组成，测试用 fail-to-pass 和 pass-to-pass。**必读**，requirements 与 interface 为何存在在这里讲。"
+  },
+  {
+   "id": "s06",
+   "page": 4,
+   "title": "§3.3 Public, Commercial, and Held-Out",
+   "from": "SWE-Bench Pro consists of a total of 1865 human-verified and augmented",
+   "summary": "三集的具体题数：公开 731、商业 276、留出 858，以及各自的公开方式。**必读**，短。"
+  },
+  {
+   "id": "s07",
+   "page": 4,
+   "title": "§4 / §4.1 Sourcing Problems",
+   "from": "Each problem from SWE-Bench Pro consists of three components: a task description",
+   "summary": "取题方法：用相邻 commit 对，拆出 test patch 和 gold patch。篇幅很短，读一遍即可。"
+  },
+  {
+   "id": "s08",
+   "page": 5,
+   "title": "§4.2 Creating Task Descriptions",
+   "from": "SWE-Bench Pro leverages human-driven augmentation, which makes it possible to construct",
+   "summary": "人工把 issue、commit、PR 里的信息收集起来，重写出问题描述和 requirements，requirements 只说行为不说实现。**必读**。"
+  },
+  {
+   "id": "s09",
+   "page": 5,
+   "title": "§4.3 Creating Environments",
+   "from": "We create environments through 3 steps: First, we construct environments manually",
+   "summary": "三步：工程师手工搭 Docker，gold 测试重复跑排除 flaky，人工审 fail-to-pass 测试并删掉无关或过宽的测试。**必读**，是 verifier 质量控制的全部内容。"
+  },
+  {
+   "id": "s10",
+   "page": 6,
+   "title": "§5 Results",
+   "from": "We present the results on SWE-Bench Pro. Below, we detail the evaluation criteria",
+   "summary": "统一用 SWE-Agent，最多 50 轮，不含歧义设定；公开集最高 43.6%，商业集最高 17.8%。看数字和设定即可，细节可略。"
+  },
+  {
+   "id": "s11",
+   "page": 7,
+   "title": "§6.1 Analysis on Model Performance",
+   "from": "As shown in Figure 3 (left), resolve rates differ markedly across",
+   "summary": "按语言、仓库、改动文件数拆分成绩。Go 和 Python 较高，文件数越多越难。可略读。"
+  },
+  {
+   "id": "s12",
+   "page": 8,
+   "title": "§6.2 Ablation: Removing Human Augmentations",
+   "from": "We perform an ablation in the importance of augmentations in SWE-Bench Pro",
+   "summary": "去掉 requirements 和 interface 后，GPT-5 从 25.9% 掉到 8.40%，Opus 4.1 从 22.7% 掉到 8.20%。**必读**，是人工补全有用的唯一量化证据。"
+  },
+  {
+   "id": "s13",
+   "page": 8,
+   "title": "§6.3 Trajectory Failure Modes",
+   "from": "We conduct an LLM-as-a-judge analysis for failure modes of different models",
+   "summary": "用 GPT-5 当 judge 给失败轨迹分类。文字和表 4 的数字看起来对不上，可略读。"
+  },
+  {
+   "id": "s14",
+   "page": 9,
+   "title": "§7 Limitations and Future Work",
+   "from": "Although SWE-Bench Pro includes multiple programming languages (Python",
+   "summary": "语言覆盖不均、单元测试只接受一部分合理解，未来想做 rubric 等评测。**必读**，很短。"
+  },
+  {
+   "id": "s15",
+   "page": 9,
+   "title": "§8 Conclusion",
+   "from": "In conclusion, our introduction of SWE-Bench Pro marks a significant step forward",
+   "summary": "重申三条原则，并拿 23% 对比 Verified 的 70% 以上。可跳过。"
+  },
+  {
+   "id": "s16",
+   "page": 13,
+   "title": "附录 A Failure Mode Category Descriptions",
+   "from": "Wrong solution. The agent produces a syntactically valid patch that is functionally",
+   "summary": "失败类别的定义。做类似分析时可抄，其余可跳过。"
+  },
+  {
+   "id": "s17",
+   "page": 13,
+   "title": "附录 B Example Task Instance",
+   "from": "This section includes an example instance of SWE-Bench Pro with descriptions",
+   "summary": "用 Open Library 的一道题展示问题描述、requirements、interface 的实际样子，并说明问题描述沿用仓库 issue 模板。**必读**，想知道补全后的任务长什么样就看这里。"
+  },
+  {
+   "id": "s18",
+   "page": 18,
+   "title": "附录 C Trajectory Failure Mode Analysis",
+   "from": "You are an expert software engineer analyzing why a software engineering agent failed",
+   "summary": "失败分类 judge 的完整 prompt。要做类似分析时可直接参考，否则可跳过。"
+  }
+ ],
+ "ver": "v2"
+}

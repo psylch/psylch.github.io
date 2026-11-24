@@ -1,0 +1,582 @@
+{
+ "id": "terminal-bench",
+ "title": "Terminal-Bench 2.0",
+ "full": "Terminal-Bench: Benchmarking Agents on Hard, Realistic Tasks in Command Line Interfaces",
+ "arxiv": "2601.11868",
+ "pdf": "papers/2601.11868.pdf",
+ "meta": "Stanford / Laude Institute 等 · 2026-01 · 正文 11 页 + 附录",
+ "question": "一个 agent 任务的最小完整单元是什么，任务怎么审才算合格？",
+ "tldr": [
+  "**任务 = 四件套**：容器环境、指令、测试、人写的参考解，外加时限。这是现在造 agent 任务的事实标准格式（Harbor），26 个旧 bench 都被改写进了这个格式。",
+  "**verifier 只查终态**：测试检查容器最后的状态，不看 agent 用了什么命令、输出了什么。所以它不限定接口，agent 用什么工具都行。",
+  "**合格任务的三条标准**：Specificity（测试通过 ⇔ 终态可接受）、Solvability（参考解能跑通全部测试）、Integrity（没有现实中不存在的捷径）。",
+  "**质量靠流程不靠题量**：229 道众包题只留 89 道；每题约 3 小时人工审查；流程含 CI 确定性检查、LLM 预审、人审、强模型试跑后做失败归因、专门找漏洞的作弊 agent。",
+  "**承认的短板**：题目全公开、允许联网，防污染只靠 canary 字符串；耗时是作者估计而非实测；测试质量没有客观度量。"
+ ],
+ "forUs": [
+  "终态判定这条直接支持「GUI / MCP / 代码都接受」：只要 verifier 查的是工程和产物的终态，接口就不需要统一。",
+  "三条标准可以原样搬到 UE 任务审查表里。Integrity 在 UE 里对应的是：工程里不能残留参考资产、缓存或后续版本的提交。",
+  "作弊 agent 的成本很低（一段 prompt），建议每个 verifier 上线前都跑一遍。",
+  "它没解决的两件事要另找答案：非确定性产物（渲染结果、视觉质量）怎么判，见 BlenderWorld；私有留出集，见 SWE-bench Pro。"
+ ],
+ "readFirst": [
+  {
+   "label": "§2.1 任务定义",
+   "why": "四件套和「只查终态」",
+   "note": "n06"
+  },
+  {
+   "label": "§2.3 Verification",
+   "why": "三条标准，全文最值得背下来的一段",
+   "note": "n14"
+  },
+  {
+   "label": "图 3 审查流程",
+   "why": "两阶段七步，每题约 3 小时",
+   "note": "n18"
+  },
+  {
+   "label": "附录 B.2 检查工具",
+   "why": "可以直接抄的 CI 和 LLM 检查项",
+   "note": "n43"
+  },
+  {
+   "label": "附录 B.4 作弊 agent",
+   "why": "prompt 原文和三类常见漏洞",
+   "note": "n47"
+  },
+  {
+   "label": "§5 Limitations",
+   "why": "它没解决什么",
+   "note": "n40"
+  }
+ ],
+ "notes": [
+  {
+   "id": "n01",
+   "page": 1,
+   "cat": "task",
+   "from": "a carefully curated hard",
+   "to": "problems from real workflows",
+   "note": "只有 89 题。现代 agent bench 的取向是每题都经得起审，而不是堆量。题量小的代价是统计噪声大，所以后面要靠多次重复运行来补。"
+  },
+  {
+   "id": "n02",
+   "page": 1,
+   "cat": "task",
+   "from": "Each task features a unique environment",
+   "to": "comprehensive tests for verification",
+   "note": "每题独立环境 + 人写解 + 测试。注意是「每题一个环境」，不是多题共用一个环境，隔离性和复现性由此而来。"
+  },
+  {
+   "id": "n03",
+   "page": 1,
+   "cat": "result",
+   "from": "models and agents score less than 65%",
+   "note": "发布时留了约 35 个点的空间。一个 bench 发布时头部分数在 50–65% 左右比较理想：既能区分模型，又不会一年内饱和。"
+  },
+  {
+   "id": "n04",
+   "page": 2,
+   "cat": "task",
+   "key": true,
+   "from": "Each task consists of (1) a",
+   "to": "manually written to solve this task",
+   "note": "**任务四件套**：(1) 容器化环境 (2) 指令 (3) 测试 (4) 人写的参考解。后面 CraftBench-UE 等基本都是这个结构的变体。"
+  },
+  {
+   "id": "n05",
+   "page": 2,
+   "cat": "data",
+   "from": "manually verified by three human reviewers for correctness",
+   "note": "每题三人审。审的是任务本身（指令、测试、解是否自洽），不是审模型输出。"
+  },
+  {
+   "id": "n06",
+   "page": 2,
+   "cat": "verifier",
+   "key": true,
+   "from": "The tests verify that all outcomes",
+   "to": "using a variety of approaches",
+   "note": "**全文最重要的设计决定：只查终态，不查过程。** 测试检查容器最终状态的属性，不看命令和终端输出。好处是不限定解法；代价是指令必须把所有可接受的终态说清楚，否则测试会误判。",
+   "infer": "对 CUA 轨迹数据同理：verifier 不应该比对点击序列，而应该查应用和文件的终态。"
+  },
+  {
+   "id": "n07",
+   "page": 2,
+   "cat": "task",
+   "from": "Tasks are specified using the Harbor task format",
+   "to": "run using the Harbor harness",
+   "note": "任务格式和运行框架分离。格式是数据资产，框架可以换。"
+  },
+  {
+   "id": "n08",
+   "page": 2,
+   "cat": "data",
+   "from": "adapt 26 other preexisting benchmarks into the same",
+   "note": "脚注：26 个已有 bench 被适配进同一格式。说明四件套足够通用，也说明用通用格式造的任务可以直接进别人的评测和训练管线。"
+  },
+  {
+   "id": "n09",
+   "page": 3,
+   "cat": "data",
+   "from": "we crowd-sourced tasks through",
+   "to": "93 contributors creating 229 tasks",
+   "note": "题目来自 93 位贡献者的开源众包，不是从现成仓库自动挖。多样性高，但质量参差，所以审查流程才那么重。"
+  },
+  {
+   "id": "n10",
+   "page": 3,
+   "cat": "data",
+   "key": true,
+   "from": "Of those 229, we selected 89",
+   "to": "three experienced human reviewers",
+   "note": "229 → 89，入选率 39%。筛选依据是难度和三位审稿人的质量评估。造题时要按至少一半会被淘汰来做预算。"
+  },
+  {
+   "id": "n11",
+   "page": 3,
+   "cat": "data",
+   "from": "Contributors assigned expert",
+   "to": "completion time estimates to their tasks",
+   "note": "每题标注专家和初级工程师的人类耗时。用人类耗时给任务定难度是 METR 那条线的做法，现在是标配元数据。"
+  },
+  {
+   "id": "n12",
+   "page": 3,
+   "cat": "verifier",
+   "from": "Agents run inside a container into which the tests are copied and executed",
+   "note": "图 2 说明了隔离方式：测试和参考解不在给 agent 的镜像里，agent 结束后才把测试拷进容器执行。agent 运行期间看不到判分逻辑。"
+  },
+  {
+   "id": "n13",
+   "page": 4,
+   "cat": "verifier",
+   "from": "We consider a task to be verified if experienced task reviewers",
+   "note": "这里的 verification 指「任务被验证合格」，不是「验证 agent 的输出」。下面三条是任务合格标准。"
+  },
+  {
+   "id": "n14",
+   "page": 4,
+   "cat": "verifier",
+   "key": true,
+   "from": "the unit tests will pass if and only",
+   "to": "the container ends in an acceptable state",
+   "note": "**Specificity：充要条件。** 测试通过 ⇔ 终态可接受。两个方向各对应一种病：测试太松会放过错误解（假阳性）；测试查了指令没说的东西会冤杀正确解（假阴性）。"
+  },
+  {
+   "id": "n15",
+   "page": 4,
+   "cat": "verifier",
+   "from": "each task has an oracle solution script",
+   "to": "causes all test cases to pass",
+   "note": "**Solvability。** 参考解脚本必须模拟真实工作流并跑通全部测试。它同时是测试本身的回归测试：环境或依赖变了，先跑参考解。"
+  },
+  {
+   "id": "n16",
+   "page": 4,
+   "cat": "verifier",
+   "key": true,
+   "from": "It should not be possible for an agent to",
+   "to": "not exist in a real-world deployment",
+   "note": "**Integrity。** 判断标准不是「能不能走捷径」，而是「这个捷径在真实部署里存不存在」。真实存在的聪明办法是允许的。"
+  },
+  {
+   "id": "n17",
+   "page": 4,
+   "cat": "verifier",
+   "from": "all future commits should be removed from the history",
+   "note": "例子：任务基于某个 commit，就要把之后的提交从历史里删掉，否则 agent 能看到答案。",
+   "infer": "UE 对应物：工程目录里的参考资产、自动保存、派生数据缓存、版本控制历史，都可能泄露目标状态。"
+  },
+  {
+   "id": "n18",
+   "page": 4,
+   "cat": "data",
+   "key": true,
+   "from": "the average task received approximately three hours of combined reviewer attention",
+   "note": "图 3 是两阶段七步流程：合并前（提交清单 → CI 和 LLM 检查 → 人审），合并后（强模型试跑 → 人工看轨迹 → 作弊 agent → 终审）。**成本数字：每题约 3 小时审查，不含造题时间。**"
+  },
+  {
+   "id": "n19",
+   "page": 4,
+   "cat": "verifier",
+   "from": "other checks verified the absence of common failure modes",
+   "to": "agent should fail the task",
+   "note": "最便宜的两个自动检查：参考解必须通过；什么都不做的 dummy agent 必须失败。第二条能抓出初始状态就已满足测试的坏题。"
+  },
+  {
+   "id": "n20",
+   "page": 4,
+   "cat": "data",
+   "from": "which used a language model to",
+   "to": "find common mistakes",
+   "note": "用 LLM 做任务预审，把常见错误拦在人审之前。具体检查项在附录 B.2。"
+  },
+  {
+   "id": "n21",
+   "page": 4,
+   "cat": "data",
+   "from": "Each task was run with multiple language models and Terminus 2",
+   "note": "每题用多个强模型实跑，失败后由出题人判断是模型能力不够，还是题目有问题。这一步合并前做一次，合并后审计再做一次。"
+  },
+  {
+   "id": "n22",
+   "page": 5,
+   "cat": "verifier",
+   "key": true,
+   "from": "An adversarial exploit agent was run to detect design flaws",
+   "note": "专门跑一个以作弊为目标的 agent 来找测试漏洞。做法见附录 B.4。"
+  },
+  {
+   "id": "n23",
+   "page": 5,
+   "cat": "limit",
+   "from": "We acknowledge that our benchmark may still have flaws",
+   "note": "审到这个程度仍然不保证无缺陷。参照 SWE-bench Verified 和 OSWorld 的历史，bench 发布后还会不断被发现坏题。"
+  },
+  {
+   "id": "n24",
+   "page": 5,
+   "cat": "limit",
+   "from": "as estimated by the task authors",
+   "note": "表 1 的人类耗时是出题人估计，不是找人实测。近半数题专家不到 1 小时，大多数题初级工程师要 1 小时到 1 天。"
+  },
+  {
+   "id": "n25",
+   "page": 5,
+   "cat": "verifier",
+   "from": "tests for completion by ensuring identical input-output mappings",
+   "note": "差分测试：把 COBOL 原程序当 oracle，新程序在同样输入下输出一致即通过。不需要人写预期答案。",
+   "infer": "3D 里的类比是拿参考工程的属性或渲染结果做 oracle，但要处理浮点和渲染非确定性。"
+  },
+  {
+   "id": "n26",
+   "page": 6,
+   "cat": "result",
+   "from": "we run the benchmark at least five times",
+   "to": "32,155 trials",
+   "note": "每个模型和 agent 组合至少跑 5 次，共 32,155 次试验，报 95% 置信区间。89 题的小题库必须靠重复运行压噪声。"
+  },
+  {
+   "id": "n27",
+   "page": 6,
+   "cat": "task",
+   "from": "agent and model performance are hard to",
+   "to": "decouple",
+   "note": "harness 和模型的成绩纠缠在一起，所以他们自己做了只有一个终端工具的 Terminus 2 当中立基线。发布会数字通常报的是「模型 + 自家 harness」的最好成绩，比较时要看清楚。"
+  },
+  {
+   "id": "n28",
+   "page": 6,
+   "cat": "task",
+   "key": true,
+   "from": "we do not explicitly require agents to use a terminal as their sole tool",
+   "note": "虽然叫 Terminal-Bench，但并不要求只用终端，agent 可以用任何方式操作容器。这是只查终态带来的直接结果。"
+  },
+  {
+   "id": "n29",
+   "page": 6,
+   "cat": "result",
+   "from": "run between 32 and 100 containers in parallel",
+   "note": "32–100 个容器并行。大规模评测和 RL 都依赖这种并行能力。",
+   "infer": "UE 这类重型 GUI 应用很难做到这个并行度，这是 3D 类 bench 普遍题量小的原因之一。"
+  },
+  {
+   "id": "n30",
+   "page": 7,
+   "cat": "result",
+   "from": "model selection is usually more important than agent scaffold",
+   "note": "模型比 scaffold 重要：换模型带来 52 个点的差距，换 scaffold 是 17 个点。"
+  },
+  {
+   "id": "n31",
+   "page": 7,
+   "cat": "result",
+   "from": "essentially no correlation between the",
+   "to": "model success rates",
+   "note": "步数和成功率基本不相关，token 用量和成功率也不相关。多跑不等于做对。"
+  },
+  {
+   "id": "n32",
+   "page": 7,
+   "cat": "limit",
+   "from": "Terminal-Bench 2.0 may become saturated within the next",
+   "note": "作者预计一年内饱和，并计划持续出新题集。bench 是消耗品，要按持续出题来设计流程。"
+  },
+  {
+   "id": "n33",
+   "page": 8,
+   "cat": "data",
+   "from": "The largest discrepancy occurs when humans rate tasks",
+   "note": "人估的难度和模型实测难度相关性只有 r=0.436。人觉得中等、模型觉得难的题最多（54.5%），多是需要创造性或对抗性思考的题。难度标签不能只靠人估。"
+  },
+  {
+   "id": "n34",
+   "page": 8,
+   "cat": "data",
+   "from": "To provide a more objective measure",
+   "to": "average pass rate",
+   "note": "「实测难度」的定义：一组前沿模型在同一 scaffold 下的平均通过率，按 2/3 和 1/3 切成易、中、难三档。"
+  },
+  {
+   "id": "n35",
+   "page": 9,
+   "cat": "verifier",
+   "from": "On a calibration subset of 20",
+   "to": "annotators achieve high agreement",
+   "note": "失败分析用了 LLM judge，但先做了校准：先看人和人之间的一致性，再看 judge 和人的一致性。"
+  },
+  {
+   "id": "n36",
+   "page": 9,
+   "cat": "verifier",
+   "key": true,
+   "from": "Compared against 120 human-labeled traces",
+   "to": "with an agreement of 90%",
+   "note": "judge 对照 120 条人工标注轨迹，一致率 90%。**用 LLM judge 的最低要求是报告它和人的一致率。** 注意这里 judge 只用于分析失败原因，不用于判定任务通过与否。"
+  },
+  {
+   "id": "n37",
+   "page": 9,
+   "cat": "result",
+   "from": "Execution errors dominate for Opus 4.5",
+   "note": "失败分三类：Execution（不遵守指令、重复步骤、不知道何时停）、Coherence（推理和行动不一致、丢上下文）、Verification（过早结束、没验证或验证太弱）。头部闭源模型以 Execution 为主。"
+  },
+  {
+   "id": "n38",
+   "page": 10,
+   "cat": "limit",
+   "from": "an agent could locate our dataset and cheat by reading the oracle solutions",
+   "note": "允许联网，理论上 agent 可以搜到公开的题库和参考解。作者说几万条轨迹里没观察到。"
+  },
+  {
+   "id": "n39",
+   "page": 10,
+   "cat": "limit",
+   "from": "canary string in each file in our repository",
+   "note": "防训练污染只靠在每个文件里放 canary 字符串，依赖训练方自觉过滤。"
+  },
+  {
+   "id": "n40",
+   "page": 10,
+   "cat": "limit",
+   "key": true,
+   "from": "development of a private test set to be outside the scope",
+   "note": "没有私有测试集。这是它最大的结构性短板，也是 SWE-bench Pro 那篇主要要补的地方。"
+  },
+  {
+   "id": "n41",
+   "page": 10,
+   "cat": "limit",
+   "from": "even stable resources can change over time",
+   "note": "联网带来外部依赖，环境会随时间漂移。版本固定和预构建镜像只能缓解，不能根除。"
+  },
+  {
+   "id": "n42",
+   "page": 25,
+   "cat": "verifier",
+   "from": "shall not include tests or oracle solutions",
+   "to": "agents could cheat by reading them",
+   "note": "确定性 CI 检查之一：环境镜像里不能包含测试和参考解。其余几项是 canary、权限、元数据字段等。"
+  },
+  {
+   "id": "n43",
+   "page": 25,
+   "cat": "verifier",
+   "key": true,
+   "from": "checks whether all behavior checked in the test cases",
+   "to": "checked in the unit tests",
+   "note": "**LLM 检查的头两项正好是 Specificity 的两个方向**：测试查的行为是否都写进了指令；指令写的行为是否都被测试覆盖。这两项可以直接拿来当审查 prompt。"
+  },
+  {
+   "id": "n44",
+   "page": 25,
+   "cat": "verifier",
+   "from": "checks if it is hard for the agent to cheat on the task",
+   "note": "反作弊检查：改数据文件、在文件里找答案字符串、看到更新的 git 提交等。"
+  },
+  {
+   "id": "n45",
+   "page": 25,
+   "cat": "verifier",
+   "from": "checks if the solution directly outputs or hard-codes the final answer",
+   "note": "参考解不能直接 echo 答案，必须真的走一遍计算过程。否则它证明不了任务可解。"
+  },
+  {
+   "id": "n46",
+   "page": 26,
+   "cat": "data",
+   "from": "IMPLICIT EXPECTATIONS: Tests check for",
+   "to": "INSUFFICIENT",
+   "note": "失败归因工具的 prompt。四类「指令不足」：精确规格不匹配、隐含期望、硬编码的测试期望、把示例当要求。判断信号：**多次试验都挂在同一批测试上，多半是题的问题；各挂各的，才是正常难度。**"
+  },
+  {
+   "id": "n47",
+   "page": 27,
+   "cat": "verifier",
+   "key": true,
+   "from": "Common",
+   "to": "but not absence of wrong answers",
+   "note": "作弊 agent 找到的三类常见漏洞：(1) 给测试环境打猴子补丁 (2) 猜答案 (3) 把所有可能答案都生成出来，因为测试只查「正确答案存在」而不查「错误答案不存在」。不管它过没过，轨迹都由作者人工看。"
+  },
+  {
+   "id": "n48",
+   "page": 27,
+   "cat": "verifier",
+   "from": "Complete a task ONLY IF you could use some cheating",
+   "note": "作弊 agent 的 prompt 原文就在这一页，很短。它不看测试和参考解，只凭任务描述去猜判分逻辑的弱点。"
+  },
+  {
+   "id": "n49",
+   "page": 27,
+   "cat": "limit",
+   "from": "Test case quality is not assessed via objective, automated metrics",
+   "note": "用 ABC 检查表自评时承认的缺项：测试质量没有客观度量（例如覆盖率），全靠人审；另外仍有非确定性（硬件差异、外部 API）。"
+  },
+  {
+   "id": "n50",
+   "page": 28,
+   "cat": "limit",
+   "from": "this",
+   "to": "remains largely a symbolic safeguard",
+   "note": "作者自己承认 canary 基本只是象征性的保护。"
+  },
+  {
+   "id": "n51",
+   "page": 28,
+   "cat": "data",
+   "from": "averaging to 0.896",
+   "note": "ABC 检查表自评 0.896。ABC 把 bench 质量拆成三块：结果有效性、任务有效性、报告规范，可以当作我们自己造 bench 时的验收表。"
+  }
+ ],
+ "sections": [
+  {
+   "id": "s01",
+   "page": 1,
+   "title": "摘要",
+   "from": "AI agents may soon become capable of autonomously",
+   "summary": "一句话定位：89 道精选的终端任务，每题有独立环境、人写解和测试，发布时头部模型不到 65%。读完摘要就知道全文骨架。"
+  },
+  {
+   "id": "s02",
+   "page": 2,
+   "title": "§1 Introduction",
+   "from": "As AI agents gain the abilities to operate autonomously",
+   "summary": "说明为什么选终端这个界面，并给出任务四件套的定义。背景部分可以扫过，四件套那句要看。"
+  },
+  {
+   "id": "s03",
+   "page": 2,
+   "title": "§2.1 Task Formulation",
+   "from": "A Terminal-Bench task consists of an instruction",
+   "summary": "任务由指令、镜像、测试、参考解、时限组成，测试只检查容器终态。**全文最核心的一节，必读。**"
+  },
+  {
+   "id": "s04",
+   "page": 3,
+   "title": "§2.2 Dataset Construction",
+   "from": "The Terminal-Bench task formulation is flexible and expressive",
+   "summary": "题目怎么来：93 人众包 229 题，筛到 89 题。配图 2 展示一个任务的文件结构和运行过程。"
+  },
+  {
+   "id": "s05",
+   "page": 4,
+   "title": "§2.3 Verification",
+   "from": "We consider a task to be verified if",
+   "summary": "任务合格的三条标准（Specificity、Solvability、Integrity）和保证它们的七步审查流程。**造题和审题的方法论都在这里，必读。**"
+  },
+  {
+   "id": "s06",
+   "page": 5,
+   "title": "§2.4 Composition",
+   "from": "Terminal-Bench tasks vary widely",
+   "summary": "题目的类别分布和人类耗时分布。看表 1 和图 4 即可。"
+  },
+  {
+   "id": "s07",
+   "page": 6,
+   "title": "§3 Experimental Setup",
+   "from": "We evaluate six state-of-the-art agents",
+   "summary": "评测设置：6 个 agent、16 个模型、每组至少 5 次。解释了为什么自己做一个中立的 Terminus 2，以及 Harbor 运行框架。"
+  },
+  {
+   "id": "s08",
+   "page": 6,
+   "title": "§4 Results",
+   "from": "Figure 1 shows the highest score achieved by each model",
+   "summary": "主结果：最高 63%，模型的影响大于 scaffold。"
+  },
+  {
+   "id": "s09",
+   "page": 7,
+   "title": "§4.1 Cost and Model Performance",
+   "from": "Running Terminal-Bench 2.0 costs anywhere from one",
+   "summary": "跑一遍的成本从 1 美元到 100 美元不等；步数、token 用量和成功率都不相关。"
+  },
+  {
+   "id": "s10",
+   "page": 7,
+   "title": "§4.2 Model Performance over Time",
+   "from": "New model releases show improved performance",
+   "summary": "八个月内最好成绩接近翻倍，作者预计一年内饱和。可跳过，记住结论即可。"
+  },
+  {
+   "id": "s11",
+   "page": 8,
+   "title": "§4.3 Predicted vs. Empirical Difficulty",
+   "from": "Each task in Terminal-Bench 2.0 includes an author-estimated difficulty",
+   "summary": "人估难度和模型实测难度只有中等相关。给出了「实测难度」的定义方法，造题时可以借用。"
+  },
+  {
+   "id": "s12",
+   "page": 9,
+   "title": "§4.4 Trajectory-Level Error Analysis",
+   "from": "To inform future agent and model development",
+   "summary": "把失败轨迹分成执行、连贯、验证三类，用校准过的 LLM judge 标注。judge 校准的做法值得看。"
+  },
+  {
+   "id": "s13",
+   "page": 9,
+   "title": "§4.5 Command-Level Error Analysis",
+   "from": "Agents attempt each Terminal-Bench task across a series of turns",
+   "summary": "命令级别的失败统计，最常见的是调用了不存在的可执行文件。对造 bench 帮助不大，可跳过。"
+  },
+  {
+   "id": "s14",
+   "page": 10,
+   "title": "§5 Limitations",
+   "from": "Terminal-Bench is designed to test agents in a realistic environment",
+   "summary": "作者承认的四个问题：联网可能搜到答案、公开题库会被训练、外部依赖漂移、仍可能有坏题。**必读。**"
+  },
+  {
+   "id": "s15",
+   "page": 25,
+   "title": "附录 B.2 Check Tools",
+   "from": "To facilitate automated quality control",
+   "summary": "审查用的确定性 CI 检查和 LLM 检查清单，逐项列出。可以直接改成自己的审查工具。"
+  },
+  {
+   "id": "s16",
+   "page": 26,
+   "title": "附录 B.3 Debug Tool",
+   "from": "We offer an LLM-powered debug tool",
+   "summary": "失败归因工具的完整 prompt，用来判断失败是模型的问题还是题目指令不足。"
+  },
+  {
+   "id": "s17",
+   "page": 27,
+   "title": "附录 B.4 Adversarial Exploit Agent",
+   "from": "During task auditing, we run an adversarial exploit agent",
+   "summary": "作弊 agent 的做法和 prompt 原文，以及它常找到的三类漏洞。篇幅很短，必读。"
+  },
+  {
+   "id": "s18",
+   "page": 27,
+   "title": "附录 B.5 ABC 自评",
+   "from": "We applied the Agentic Benchmark Checklist",
+   "summary": "用 ABC 检查表给自己打分，并逐条说明没满足的项。等于一份更诚实的局限清单。"
+  }
+ ],
+ "ver": "v1"
+}
